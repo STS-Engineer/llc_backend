@@ -125,6 +125,171 @@ async function sendPmReviewMail({ to, llcId, token }) {
   console.log(`📨 Mail de validation envoyé à ${to} pour LLC #${llcId}`);
 }
 
+const FINAL_VALIDATOR_EMAIL = process.env.FINAL_VALIDATOR_EMAIL || "ons.ghariani@avocarbon.com";
+
+function generateFinalToken() {
+  return crypto.randomBytes(32).toString("hex");
+}
+
+async function sendFinalReviewMail({ to, llcId, token }) {
+  const FRONTEND_URL = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
+
+  // ✅ même principe que PM : un lien unique vers la page front
+  const reviewLink = `${FRONTEND_URL}/final-review/${llcId}?token=${encodeURIComponent(token)}`;
+
+  const html = `
+    <div style="font-family:Segoe UI, Arial, sans-serif; line-height:1.6">
+      <h2>LLC #${llcId} – Final validation requise</h2>
+
+      <p>
+        Le <b>PM Decision</b> est <b>APPROVED</b>. <br/>
+        Ce LLC nécessite maintenant votre <b>validation finale</b>.
+      </p>
+
+      <p>
+        👉 Cliquez sur le lien ci-dessous pour consulter le LLC et valider ou refuser :
+      </p>
+
+      <p style="margin:24px 0">
+        <a href="${reviewLink}"
+           style="
+             background:#0e4e78;
+             color:#ffffff;
+             padding:12px 20px;
+             border-radius:10px;
+             text-decoration:none;
+             font-weight:600;
+             display:inline-block;
+           ">
+          Ouvrir le LLC pour validation finale
+        </a>
+      </p>
+
+      <p style="font-size:12px;color:#6b7280">
+        Ce lien est personnel et temporaire.<br/>
+        Si vous n’êtes pas le bon validateur, ignorez ce message.
+      </p>
+    </div>
+  `;
+
+  await emailTransporter.sendMail({
+    from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
+    to,
+    subject: `LLC #${llcId} – Validation finale requise`,
+    html,
+  });
+
+  console.log(`📨 Mail FINAL envoyé à ${to} pour LLC #${llcId}`);
+}
+
+async function sendPmDecisionResultMail({ to, llcId, decision, reason }) {
+  const FRONTEND_URL = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
+  const viewLink = `${FRONTEND_URL}/dashboard`; // ou une page details si tu as
+  const editLink = `${FRONTEND_URL}/llc/${llcId}/edit`;
+
+  const isRejected = decision === "REJECTED";
+
+  const html = `
+    <div style="font-family:Segoe UI, Arial, sans-serif; line-height:1.6">
+      <h2>LLC #${llcId} – Résultat validation PM</h2>
+
+      <p>
+        Décision PM : <b style="color:${isRejected ? "#b91c1c" : "#047857"}">${decision}</b>
+      </p>
+
+      ${
+        isRejected
+          ? `<p><b>Raison :</b><br/>${String(reason || "").replaceAll("\n", "<br/>")}</p>
+             <p style="margin:24px 0">
+               <a href="${editLink}"
+                  style="background:#ef7807;color:#fff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600;display:inline-block;">
+                 Modifier le LLC
+               </a>
+             </p>`
+          : `<p>Le LLC passe à l’étape <b>Validation Finale</b>.</p>
+             <p style="margin:24px 0">
+               <a href="${viewLink}"
+                  style="background:#0e4e78;color:#fff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600;display:inline-block;">
+                 Ouvrir le dashboard
+               </a>
+             </p>`
+      }
+
+      <p style="font-size:12px;color:#6b7280">
+        Ceci est un message automatique.
+      </p>
+    </div>
+  `;
+
+  await emailTransporter.sendMail({
+    from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
+    to,
+    subject: `LLC #${llcId} – PM decision: ${decision}`,
+    html,
+  });
+}
+
+async function sendFinalDecisionResultMail({ to, llcId, decision, reason, generated_llc }) {
+  const FRONTEND_URL = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
+  const editLink = `${FRONTEND_URL}/llc/${llcId}/edit`;
+
+  // lien de téléchargement docx si tu exposes /uploads en static (tu le fais déjà)
+  const docxLink = generated_llc
+    ? `${FRONTEND_URL}/${generated_llc}` // si front sert le fichier, sinon utilise API host
+    : "";
+
+  const isRejected = decision === "REJECTED";
+
+  const html = `
+    <div style="font-family:Segoe UI, Arial, sans-serif; line-height:1.6">
+      <h2>LLC #${llcId} – Résultat validation finale</h2>
+
+      <p>
+        Décision finale : <b style="color:${isRejected ? "#b91c1c" : "#047857"}">${decision}</b>
+      </p>
+
+      ${
+        isRejected
+          ? `<p><b>Raison :</b><br/>${String(reason || "").replaceAll("\n", "<br/>")}</p>
+             <p style="margin:24px 0">
+               <a href="${editLink}"
+                  style="background:#ef7807;color:#fff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600;display:inline-block;">
+                 Modifier le LLC
+               </a>
+             </p>`
+          : `<p>Le LLC est <b>validé définitivement</b>.</p>
+             ${
+               docxLink
+                 ? `<p style="margin:24px 0">
+                      <a href="${docxLink}"
+                         style="background:#0e4e78;color:#fff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600;display:inline-block;">
+                        Télécharger le DOCX
+                      </a>
+                    </p>`
+                 : ""
+             }`
+      }
+
+      <p style="font-size:12px;color:#6b7280">
+        Ceci est un message automatique.
+      </p>
+    </div>
+  `;
+
+  await emailTransporter.sendMail({
+    from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
+    to,
+    subject: `LLC #${llcId} – Final decision: ${decision}`,
+    html,
+  });
+}
+
+async function getLlcEditorEmail(llcId) {
+  const r = await pool.query(`SELECT editor, generated_llc FROM public.llc WHERE id=$1`, [llcId]);
+  if (!r.rowCount) return { editorEmail: "", generated_llc: "" };
+  return { editorEmail: r.rows[0].editor || "", generated_llc: r.rows[0].generated_llc || "" };
+}
+
 // =========================
 // Configuration de la base
 // =========================
@@ -781,18 +946,58 @@ app.post("/api/llc/:id/pm-review/decision", async (req, res) => {
   }
 
   if (action === "approve") {
+    // 1) Update PM decision + status
     const r = await pool.query(
       `
       UPDATE public.llc
       SET pm_decision = 'APPROVED',
           pm_decision_at = NOW(),
-          pm_validation_date = NOW()
+          pm_validation_date = NOW(),
+          status = 'WAITING_FOR_VALIDATION'
       WHERE id = $1 AND pm_review_token = $2
-      RETURNING *
+      RETURNING id
       `,
       [llcId, token]
     );
-    return res.json(r.rows[0]);
+
+    if (!r.rowCount) return res.status(404).json({ error: "Invalid or expired link" });
+
+    // 2) Create FINAL token and store in DB
+    const finalToken = generateFinalToken();
+
+    await pool.query(
+      `
+      UPDATE public.llc
+      SET final_review_token = $1,
+          final_review_token_expires = NOW() + INTERVAL '30 days',
+          final_decision = 'PENDING_FOR_VALIDATION',
+          final_validation_date = NULL,
+          final_reject_reason = NULL
+      WHERE id = $2
+      `,
+      [finalToken, llcId]
+    );
+
+    // 3) Respond
+    res.json({ ok: true });
+
+    const { editorEmail } = await getLlcEditorEmail(llcId);
+    sendPmDecisionResultMail({
+      to: editorEmail,
+      llcId,
+      decision: "APPROVED",
+    }).catch(console.error);
+
+    // 4) Send final mail (non bloquant)
+    sendFinalReviewMail({
+      to: FINAL_VALIDATOR_EMAIL,
+      llcId,
+      token: finalToken,
+    }).catch((err) => {
+      console.error("❌ Final review email failed:", err?.message || err);
+    });
+
+    return;
   }
 
   const r = await pool.query(
@@ -806,6 +1011,86 @@ app.post("/api/llc/:id/pm-review/decision", async (req, res) => {
     `,
     [llcId, token, reason || ""]
   );
+
+  res.json(r.rows[0]);
+
+  const { editorEmail } = await getLlcEditorEmail(llcId);
+  sendPmDecisionResultMail({
+    to: editorEmail,
+    llcId,
+    decision: "REJECTED",
+    reason: reason || "",
+  }).catch(console.error);
+
+});
+
+app.get("/api/llc/:id/final-review", async (req, res) => {
+  const llcId = Number(req.params.id);
+  const token = String(req.query.token || "");
+
+  if (!llcId || !token) return res.status(400).json({ error: "Missing id or token" });
+
+  const r = await pool.query(
+    `
+    SELECT *
+    FROM public.llc
+    WHERE id = $1
+      AND final_review_token = $2
+      AND (final_review_token_expires IS NULL OR final_review_token_expires > NOW())
+    `,
+    [llcId, token]
+  );
+
+  if (!r.rows.length) return res.status(404).json({ error: "Invalid or expired link" });
+
+  res.json(r.rows[0]);
+});
+
+app.post("/api/llc/:id/final-review/decision", async (req, res) => {
+  const llcId = Number(req.params.id);
+  const { token, action, reason } = req.body; // "approve" | "reject" + reason
+
+  if (!llcId || !token || !["approve", "reject"].includes(action)) {
+    return res.status(400).json({ error: "Invalid payload" });
+  }
+
+  // ✅ required reason when rejecting
+  if (action === "reject") {
+    const r = String(reason || "").trim();
+    if (r.length < 3) {
+      return res.status(400).json({ error: "Reject reason is required" });
+    }
+  }
+
+  const finalDecision = action === "approve" ? "APPROVED" : "REJECTED";
+  const nextStatus = action === "approve" ? "DEPLOYMENT_IN_PROGRESS" : "IN_PREPARATION";
+  const finalRejectReason = action === "reject" ? String(reason || "").trim() : null;
+  const rejectedStage = action === "reject" ? "FINAL" : null;
+  const r = await pool.query(
+    `
+    UPDATE public.llc
+    SET final_decision = $3,
+        final_validation_date = NOW(),
+        final_reject_reason = $4,
+        status = $5
+    WHERE id = $1
+      AND final_review_token = $2
+      AND (final_review_token_expires IS NULL OR final_review_token_expires > NOW())
+    RETURNING *
+    `,
+    [llcId, token, finalDecision, finalRejectReason, nextStatus]
+  );
+
+  const { editorEmail, generated_llc } = await getLlcEditorEmail(llcId);
+  sendFinalDecisionResultMail({
+    to: editorEmail,
+    llcId,
+    decision: finalDecision,                 // "APPROVED" ou "REJECTED"
+    reason: finalRejectReason || "",
+    generated_llc,
+  }).catch(console.error);
+
+  if (!r.rowCount) return res.status(404).json({ error: "Invalid or expired link" });
 
   res.json(r.rows[0]);
 });
@@ -965,9 +1250,18 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
     await client.query("BEGIN");
 
     // 0) sécurité: editable seulement si REJECTED (si tu veux)
-    const chk = await client.query("SELECT pm_decision FROM public.llc WHERE id=$1", [llcId]);
+    const chk = await client.query(
+      "SELECT pm_decision, final_decision FROM public.llc WHERE id=$1",
+      [llcId]
+    );
     if (!chk.rowCount) throw new Error("Not found");
-    if (chk.rows[0].pm_decision !== "REJECTED") throw new Error("Editable only if REJECTED");
+
+    const pmRejected = chk.rows[0].pm_decision === "REJECTED";
+    const finalRejected = chk.rows[0].final_decision === "REJECTED";
+
+    if (!pmRejected && !finalRejected) {
+      throw new Error("Editable only if PM decision is REJECTED or Final decision is REJECTED");
+    }
 
     // 1) UPDATE llc (tous champs)
     await client.query(
@@ -1079,11 +1373,17 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
       `
       UPDATE public.llc
       SET pm_review_token = $1,
-          pm_review_token_expires = NOW() + INTERVAL '7 days',
+          pm_review_token_expires = NOW() + INTERVAL '30 days',
           pm_decision = 'PENDING_FOR_VALIDATION',
           pm_decision_at = NULL,
           pm_reject_reason = NULL,
-          pm_validation_date = NULL
+          pm_validation_date = NULL,
+          
+          final_decision = NULL,
+          final_validation_date = NULL,
+          final_reject_reason = NULL,
+          final_review_token = NULL,
+          final_review_token_expires = NULL
       WHERE id = $2
       `,
       [newPmToken, llcId]
@@ -1206,6 +1506,13 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
 
     await client.query("COMMIT");
     res.json({ ok: true });
+    sendPmReviewMail({
+      to: validatorEmail,
+      llcId,
+      token: newPmToken,
+    }).catch((err) => {
+      console.error("❌ PM review re-email failed:", err?.message || err);
+    });
   } catch (e) {
     await client.query("ROLLBACK");
     res.status(400).json({ error: e.message || "Update failed" });
@@ -1214,6 +1521,41 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
   }
 });
 
+app.delete("/api/llc/:id", requireAuth, async (req, res) => {
+  const llcId = Number(req.params.id);
+  if (!llcId) return res.status(400).json({ error: "Invalid id" });
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    // (Optionnel) Sécurité: autoriser delete فقط للـ plant متاع user
+    const chk = await client.query(
+      "SELECT id FROM public.llc WHERE id=$1 AND plant=$2",
+      [llcId, req.user.plant]
+    );
+    if (!chk.rowCount) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Not found" });
+    }
+
+    // Supprimer d'abord les dépendances (si pas ON DELETE CASCADE)
+    await client.query("DELETE FROM public.llc_root_cause_attachment WHERE root_cause_id IN (SELECT id FROM public.llc_root_cause WHERE llc_id=$1)", [llcId]);
+    await client.query("DELETE FROM public.llc_root_cause WHERE llc_id=$1", [llcId]);
+    await client.query("DELETE FROM public.llc_attachment WHERE llc_id=$1", [llcId]);
+
+    // Enfin supprimer llc
+    await client.query("DELETE FROM public.llc WHERE id=$1", [llcId]);
+
+    await client.query("COMMIT");
+    res.json({ ok: true });
+  } catch (e) {
+    await client.query("ROLLBACK");
+    res.status(500).json({ error: e.message || "Delete failed" });
+  } finally {
+    client.release();
+  }
+});
 
 // ================== START ==================
 (async () => {
