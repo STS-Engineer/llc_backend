@@ -662,7 +662,7 @@ async function generateDeploymentPdfForProcessing({
   const pdfAbs = await convertDocxToPdf({
     inputDocxAbsPath: docxAbs,
     outputDirAbs: generatedDirAbs,
-    sofficePath: process.env.SOFFICE_PATH || "soffice",
+    sofficePath: process.env.SOFFICE_PATH,
   });
 
   try { fs.unlinkSync(docxAbs); } catch {}
@@ -1376,7 +1376,7 @@ app.post("/api/llc", requireAuth, upload.any(), async (req, res) => {
     const pdfAbs = await convertDocxToPdf({
       inputDocxAbsPath: docxAbs,
       outputDirAbs: generatedDirAbs,
-      sofficePath: process.env.SOFFICE_PATH || "soffice",
+      sofficePath: process.env.SOFFICE_PATH,
     });
 
     // 3) (optionnel) supprimer le DOCX si tu ne veux PAS le garder
@@ -2318,7 +2318,7 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
     const pdfAbs = await convertDocxToPdf({
       inputDocxAbsPath: docxAbs,
       outputDirAbs: generatedDirAbs,
-      sofficePath: process.env.SOFFICE_PATH || "soffice",
+      sofficePath: process.env.SOFFICE_PATH,
     });
 
     try { fs.unlinkSync(docxAbs); } catch {}
