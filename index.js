@@ -26,7 +26,7 @@ dotenv.config();
 // ================== CONFIG ==================
 const PORT = process.env.PORT || 3001;
 const UPLOAD_DIR = process.env.UPLOAD_DIR || "uploads";
-const ALLOWED_ORIGINS = [process.env.CORS_ORIGIN || "http://localhost:3000", "http://localhost:3002"];
+const ALLOWED_ORIGINS = ["https://avocarbon-llc.azurewebsites.net", "http://localhost:3000", "http://localhost:3002"];
 
 // ================== APP ==================
 const app = express();
