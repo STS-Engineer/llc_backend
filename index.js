@@ -153,7 +153,7 @@ function generatePmToken() {
 }
 
 async function sendPmReviewMail({ to, llcId, token }) {
-  const FRONTEND_URL = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
+  const FRONTEND_URL = process.env.FRONTEND_BASE_URL || "https://avocarbon-llc.azurewebsites.net";
   const reviewLink = `${FRONTEND_URL}/pm-review/${llcId}?token=${encodeURIComponent(token)}`;
 
   const html = `
@@ -218,7 +218,7 @@ async function getLlcEditorAndValidator(llcId) {
 }
 
 async function sendFinalReviewMail({ to, llcId, token }) {
-  const FRONTEND_URL = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
+  const FRONTEND_URL = process.env.FRONTEND_BASE_URL || "https://avocarbon-llc.azurewebsites.net";
   const reviewLink = `${FRONTEND_URL}/final-review/${llcId}?token=${encodeURIComponent(token)}`;
 
   const { editor, validator, plant } = await getLlcEditorAndValidator(llcId);
@@ -270,7 +270,7 @@ async function sendFinalReviewMail({ to, llcId, token }) {
 }
 
 async function sendPmDecisionResultMail({ to, llcId, decision, reason }) {
-  const FRONTEND_URL = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
+  const FRONTEND_URL = process.env.FRONTEND_BASE_URL || "https://avocarbon-llc.azurewebsites.net";
   const viewLink = `${FRONTEND_URL}/qualityLessonLearned`;
   const editLink = `${FRONTEND_URL}/llc/${llcId}/edit`;
 
@@ -313,7 +313,7 @@ async function sendPmDecisionResultMail({ to, llcId, decision, reason }) {
 }
 
 async function sendFinalDecisionResultMail({ to, llcId, decision, reason, generated_llc }) {
-  const FRONTEND_URL = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
+  const FRONTEND_URL = process.env.FRONTEND_BASE_URL || "https://avocarbon-llc.azurewebsites.net";
   const editLink = `${FRONTEND_URL}/llc/${llcId}/edit`;
 
   const docxLink = generated_llc ? `${FRONTEND_URL}/${generated_llc}` : "";
@@ -396,7 +396,7 @@ async function sendDistributionMail({
     return;
   }
 
-  const FORM_LINK = "http://localhost:3002/evidenceDeployment";
+  const FORM_LINK = "https://evidence-deployment.azurewebsites.net/evidenceDeployment";
 
   // lien vers le PDF (si dispo)
   const API_BASE_URL = process.env.API_BASE_URL || `http://localhost:${PORT}`;
@@ -675,7 +675,7 @@ function generateDepToken() {
 }
 
 async function sendDepReviewMail({ to, llcId, processingId, token, evidencePlant }) {
-  const FRONTEND_URL = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
+  const FRONTEND_URL = process.env.FRONTEND_BASE_URL || "https://avocarbon-llc.azurewebsites.net";
   const reviewLink = `${FRONTEND_URL}/dep-review/${processingId}?token=${encodeURIComponent(token)}`;
 
   const html = `
