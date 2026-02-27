@@ -27,6 +27,7 @@ dotenv.config();
 const PORT = process.env.PORT || 3001;
 const UPLOAD_DIR = process.env.UPLOAD_DIR || "uploads";
 const ALLOWED_ORIGINS = ["https://avocarbon-llc.azurewebsites.net", "http://localhost:3000", "http://localhost:3002"];
+const RESET_TOKEN_TTL_HOURS = Number(process.env.RESET_TOKEN_TTL_HOURS || 1);
 
 // ================== APP ==================
 const app = express();
@@ -146,6 +147,55 @@ async function convertDocxToPdf({
   }
 
   return pdfAbs;
+}
+
+function hashResetToken(token) {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+function buildResetLink({ token, email }) {
+  const FRONTEND_URL = process.env.FRONTEND_BASE_URL || "https://avocarbon-llc.azurewebsites.net";
+  const base = FRONTEND_URL.replace(/\/$/, "");
+  const query = `token=${encodeURIComponent(token)}${email ? `&email=${encodeURIComponent(email)}` : ""}`;
+  return `${base}/reset-password?${query}`;
+}
+
+async function sendResetPasswordMail({ to, resetLink }) {
+  const html = `
+    <div style="font-family:Segoe UI, Arial, sans-serif; line-height:1.6">
+      <h2>Password reset</h2>
+
+      <p>We received a request to reset your password.</p>
+
+      <p style="margin:24px 0">
+        <a href="${resetLink}"
+           style="
+             background:#0e4e78;
+             color:#ffffff;
+             padding:12px 20px;
+             border-radius:10px;
+             text-decoration:none;
+             font-weight:600;
+             display:inline-block;
+           ">
+          Reset your password
+        </a>
+      </p>
+
+      <p style="font-size:12px;color:#6b7280">
+        If you did not request this, you can ignore this email.
+      </p>
+    </div>
+  `;
+
+  await emailTransporter.sendMail({
+    from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
+    to,
+    subject: "Password reset request",
+    html,
+  });
+
+  console.log(`Password reset email sent to ${to}`);
 }
 
 function generatePmToken() {
@@ -399,7 +449,7 @@ async function sendDistributionMail({
   const FORM_LINK = "https://evidence-deployment.azurewebsites.net/evidenceDeployment";
 
   // lien vers le PDF (si dispo)
-  const API_BASE_URL = process.env.API_BASE_URL || `http://localhost:${PORT}`;
+  const API_BASE_URL = process.env.API_BASE_URL || `https://llc-back.azurewebsites.net`;
   const fileLink = generated_llc ? `${API_BASE_URL}/${generated_llc}` : "";
 
   // (Optionnel) nom de fichier propre
@@ -459,6 +509,64 @@ async function sendDistributionMail({
   });
 
   console.log(`📨 Distribution mail sent for LLC #${llcId} to:`, toList);
+}
+
+async function sendDistributionInfoToAdminMail({
+  to,
+  llcId,
+  productLineLabel,
+  creatorPlant,
+  distributedPlants,   
+  generated_llc,
+}) {
+  if (!to) {
+    console.error("❌ No admin email. Distribution info not sent.");
+    return;
+  }
+
+  const API_BASE_URL = process.env.API_BASE_URL || `https://llc-back.azurewebsites.net`;
+  const fileLink = generated_llc ? `${API_BASE_URL}/${generated_llc}` : "";
+  const fileLabel = generated_llc ? path.basename(generated_llc) : "N/A";
+
+  const plantsHtml = (distributedPlants || [])
+    .map(p => `<li>${String(p)}</li>`)
+    .join("");
+
+  const html = `
+    <div style="font-family:Segoe UI, Arial, sans-serif; line-height:1.6; font-size:14px; color:#111827">
+      <h2>LLC #${llcId} – Distributed to plants</h2>
+
+      <p>
+        <b>Product line:</b> ${String(productLineLabel || "N/A")}<br/>
+        <b>Creator plant:</b> ${String(creatorPlant || "N/A")}
+      </p>
+
+      <p>
+        The LLC has been distributed to the following plants:
+      </p>
+
+      <ul>
+        ${plantsHtml || "<li>(none)</li>"}
+      </ul>
+
+      <p>
+        ${
+          fileLink
+            ? `PDF: <a href="${fileLink}">${fileLabel}</a>`
+            : `PDF: ${fileLabel}`
+        }
+      </p>
+    </div>
+  `;
+
+  await emailTransporter.sendMail({
+    from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
+    to,
+    subject: `LLC #${llcId} – Distributed to ${distributedPlants?.length || 0} plant(s)`,
+    html,
+  });
+
+  console.log(`📨 Admin distribution info email sent to ${to} for LLC #${llcId}`);
 }
 
 async function getLlcAttachments(client, llcId) {
@@ -709,6 +817,64 @@ async function sendDepReviewMail({ to, llcId, processingId, token, evidencePlant
   console.log(`📨 DEP approval email sent to ${to} for processing #${processingId}`);
 }
 
+function generateDepReworkToken() {
+  return crypto.randomBytes(32).toString("hex");
+}
+
+async function getProcessingPersonEmail(processingId) {
+  const r = await pool.query(`SELECT person FROM public.llc_deployment_processing WHERE id=$1`, [processingId]);
+  return r.rowCount ? (r.rows[0].person || "") : "";
+}
+
+async function sendDepReworkMailToEditor({ to, llcId, processingId, token, reason, evidencePlant }) {
+  const FRONT_FORM_URL = process.env.FRONTEND_DEP_FORM_URL || "https://evidence-deployment.azurewebsites.net";
+
+  const link = `${FRONT_FORM_URL}?processingId=${encodeURIComponent(processingId)}&token=${encodeURIComponent(token)}`;
+
+  const html = `
+    <div style="font-family:Segoe UI, Arial, sans-serif; line-height:1.6">
+      <h2>DEP LLC #${llcId} – Rework required</h2>
+
+      <p>
+        The Evidence Deployment from <b>${String(evidencePlant || "N/A")}</b> has been
+        <b style="color:#b91c1c">REJECTED</b>.
+      </p>
+
+      ${
+        reason
+          ? `<p><b>Reason:</b><br/>${String(reason).replaceAll("\n", "<br/>")}</p>`
+          : ""
+      }
+
+      <p style="margin:24px 0">
+        <a href="${link}"
+           style="background:#ef7807;color:#fff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600;display:inline-block;">
+          Re-open Evidence Deployment (pre-filled)
+        </a>
+      </p>
+
+      <p style="font-size:12px;color:#6b7280">
+        This link is personal and temporary.
+      </p>
+    </div>
+  `;
+
+  await emailTransporter.sendMail({
+    from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
+    to,
+    subject: `DEP LLC #${llcId} – Rework required (${evidencePlant || "N/A"})`,
+    html,
+  });
+
+  console.log(`📨 DEP rework email sent to ${to} for processing #${processingId}`);
+}
+
+function publicFileUrl(storage_path) {
+  // storage_path ressemble à "uploads/xxx..."
+  const API_BASE_URL = process.env.API_BASE_URL || `https://llc-back.azurewebsites.net`;
+  if (!storage_path) return "";
+  return `${API_BASE_URL}/${storage_path.replace(/^\/+/, "")}`;
+}
 
 // =========================
 // Configuration de la base
@@ -946,21 +1112,6 @@ function requireAuth(req, res, next) {
   }
 }
 
-// ================== ensure users table ==================
-async function ensureUsersTable() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS public.users (
-        id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-        name TEXT NOT NULL,
-        email TEXT NOT NULL,
-        plant TEXT NOT NULL,
-        role TEXT NOT NULL,
-        password_hash TEXT NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
-}
-
 // ================== UPLOAD DIR ==================
 const uploadPath = path.join(process.cwd(), UPLOAD_DIR);
 fs.mkdirSync(uploadPath, { recursive: true });
@@ -1109,6 +1260,17 @@ const SignInSchema = z.object({
   password: z.string().min(1),
 });
 
+const ForgotPasswordSchema = z.object({
+  email: z.string().email(),
+});
+
+const ResetPasswordSchema = z.object({
+  token: z.string().min(1),
+  password: z.string().min(8),
+  confirm_password: z.string().min(1),
+  email: z.string().email().optional(),
+});
+
 const EvidenceDeploymentSchema = z.object({
   llc_id: z.number(),
   deployment_applicability: z.string().min(1, "Required"), // ✅ rename
@@ -1117,6 +1279,10 @@ const EvidenceDeploymentSchema = z.object({
   person: z.string().min(1, "Required").max(200),
   deployment_description: z.string().min(1, "Required").max(2000),
   pm: z.string().min(1, "Required"),
+  // ✅ pour edit mode
+  processingId: z.number().optional(),
+  token: z.string().optional(),
+  deleteAttachmentIds: z.array(z.number()).optional(),
 }).superRefine((data, ctx) => {
   if (data.deployment_applicability === "Not concerned") {
     if (!data.why_not_apply || data.why_not_apply.trim().length === 0) {
@@ -1194,6 +1360,96 @@ app.post("/api/auth/signin", async (req, res) => {
   }
 });
 
+app.post("/api/auth/forgot-password", async (req, res) => {
+  try {
+    const { email } = ForgotPasswordSchema.parse(req.body);
+    const normalizedEmail = email.toLowerCase().trim();
+
+    const exists = await pool.query(
+      "SELECT id FROM public.users WHERE email=$1 LIMIT 1",
+      [normalizedEmail]
+    );
+    if (!exists.rowCount) {
+      return res.status(404).json({ error: "User does not exist" });
+    }
+
+    await pool.query(
+      `UPDATE public.password_reset_tokens
+       SET used_at = NOW()
+       WHERE email = $1 AND used_at IS NULL`,
+      [normalizedEmail]
+    );
+
+    const token = crypto.randomBytes(32).toString("hex");
+    const tokenHash = hashResetToken(token);
+    const expiresAt = new Date(Date.now() + RESET_TOKEN_TTL_HOURS * 60 * 60 * 1000);
+
+    await pool.query(
+      `INSERT INTO public.password_reset_tokens (email, token_hash, expires_at)
+       VALUES ($1, $2, $3)`,
+      [normalizedEmail, tokenHash, expiresAt]
+    );
+
+    const resetLink = buildResetLink({ token, email: normalizedEmail });
+    await sendResetPasswordMail({ to: normalizedEmail, resetLink });
+
+    return res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e?.message || "Reset request failed" });
+  }
+});
+
+app.post("/api/auth/reset-password", async (req, res) => {
+  try {
+    const { token, password, confirm_password, email } = ResetPasswordSchema.parse(req.body);
+
+    if (password !== confirm_password) {
+      return res.status(400).json({ error: "Passwords do not match" });
+    }
+
+    const tokenHash = hashResetToken(token.trim());
+    const record = await pool.query(
+      `SELECT id, email
+       FROM public.password_reset_tokens
+       WHERE token_hash=$1
+         AND used_at IS NULL
+         AND expires_at > NOW()
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [tokenHash]
+    );
+
+    if (!record.rowCount) {
+      return res.status(400).json({ error: "Invalid or expired token" });
+    }
+
+    const tokenEmail = record.rows[0].email;
+    if (email && tokenEmail !== email.toLowerCase().trim()) {
+      return res.status(400).json({ error: "Email mismatch" });
+    }
+
+    const password_hash = await bcrypt.hash(password, 10);
+    const updated = await pool.query(
+      `UPDATE public.users SET password_hash=$1 WHERE email=$2`,
+      [password_hash, tokenEmail]
+    );
+
+    if (!updated.rowCount) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    await pool.query(
+      `UPDATE public.password_reset_tokens
+       SET used_at = NOW()
+       WHERE email = $1 AND used_at IS NULL`,
+      [tokenEmail]
+    );
+
+    return res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e?.message || "Reset request failed" });
+  }
+});
 
 // ------------------ LLC CREATE ------------------
 app.post("/api/llc", requireAuth, upload.any(), async (req, res) => {
@@ -1639,16 +1895,17 @@ app.post("/api/llc/:id/final-review/decision", async (req, res) => {
   res.json(r.rows[0]);
 
   if (action === "approve") {
-    // récupérer plant + product_line_label depuis la DB (source de vérité)
-    const llcRow = r.rows[0]; // tu fais RETURNING * donc tu l’as
+    const llcRow = r.rows[0];
 
     const dist = buildDistributionExcludingPlant({
       productLineLabel: llcRow.product_line_label,
       creatorPlant: llcRow.plant,
     });
 
+    const distributedPlants = (dist.filteredKeys || []).map(k => `${k} Plant`);
     const toList = await getDistributionRecipientsEmails({ plantKeys: dist.filteredKeys });
 
+    // 1) mail aux plants (QM + PM)
     sendDistributionMail({
       toList,
       llcId,
@@ -1656,8 +1913,18 @@ app.post("/api/llc/:id/final-review/decision", async (req, res) => {
       creatorPlant: llcRow.plant,
       generated_llc: llcRow.generated_llc,
     }).catch((err) => console.error("❌ Distribution mail failed:", err?.message || err));
-  }
 
+    // 2) mail informatif à l'admin (liste des plants)
+    const adminEmail = await getAdminEmail();
+    sendDistributionInfoToAdminMail({
+      to: adminEmail,
+      llcId,
+      productLineLabel: llcRow.product_line_label,
+      creatorPlant: llcRow.plant,
+      distributedPlants,
+      generated_llc: llcRow.generated_llc,
+    }).catch((err) => console.error("❌ Admin distribution info mail failed:", err?.message || err));
+  }
 });
 
 
@@ -1787,6 +2054,43 @@ app.post("/api/dep-processing/:processingId/review/decision", async (req, res) =
       // await client.query(`UPDATE public.llc SET status='DEPLOYMENT_PROCESSING' WHERE id=$1`, [processingRow.llc_id]);
     }
 
+    let reworkMailAfterCommit = null;
+
+    if (decision === "REJECTED") {
+      // 1) générer token rework
+      const reworkToken = generateDepReworkToken();
+
+      // 2) stocker token
+      await client.query(
+        `
+        UPDATE public.llc_deployment_processing
+        SET dep_rework_token = $1,
+            dep_rework_token_expires = NOW() + INTERVAL '30 days'
+        WHERE id = $2
+        `,
+        [reworkToken, processingId]
+      );
+
+      // 3) récupérer email person 
+      const personEmail = await getProcessingPersonEmail(processingRow.id);
+
+      // 4) préparer mail après commit (comme tu fais ailleurs)
+      reworkMailAfterCommit = async () => {
+        if (!editorEmail) {
+          console.error("❌ No editor email found. Rework mail not sent.");
+          return;
+        }
+        await sendDepReworkMailToEditor({
+          to: editorEmail,
+          llcId: processingRow.llc_id,
+          processingId: processingRow.id,
+          token: reworkToken,
+          reason: rejectReason || "",
+          evidencePlant: processingRow.evidence_plant,
+        });
+      };
+    }
+
     await client.query("COMMIT");
 
     res.json({
@@ -1795,6 +2099,10 @@ app.post("/api/dep-processing/:processingId/review/decision", async (req, res) =
       llcStatus:
         anyRejected ? "DEPLOYMENT_REJECTED" : allApproved ? "DEPLOYMENT_VALIDATED" : llcRow.status,
     });
+    Promise.resolve()
+      .then(() => reworkMailAfterCommit?.())
+      .catch((err) => console.error("❌ DEP rework email failed:", err?.message || err));
+
   } catch (e) {
     try { await client.query("ROLLBACK"); } catch {}
     res.status(400).json({ error: e?.message || "Decision failed" });
@@ -1803,7 +2111,69 @@ app.post("/api/dep-processing/:processingId/review/decision", async (req, res) =
   }
 });
 
+app.get("/api/dep-processing/:processingId/rework", async (req, res) => {
+  const processingId = Number(req.params.processingId);
+  const token = String(req.query.token || "");
 
+  if (!processingId || !token) {
+    return res.status(400).json({ error: "Missing processingId or token" });
+  }
+
+  const r = await pool.query(
+    `
+    SELECT
+      p.*,
+      l.id AS llc_id,
+      l.problem_short,
+      l.customer,
+      l.plant,
+      l.product_line_label
+    FROM public.llc_deployment_processing p
+    JOIN public.llc l ON l.id = p.llc_id
+    WHERE p.id = $1
+      AND p.dep_rework_token = $2
+      AND (p.dep_rework_token_expires IS NULL OR p.dep_rework_token_expires > NOW())
+    `,
+    [processingId, token]
+  );
+
+  if (!r.rowCount) return res.status(404).json({ error: "Invalid or expired link" });
+
+  const row = r.rows[0];
+
+  // ✅ charger les fichiers déjà stockés
+  const att = await pool.query(
+    `
+    SELECT id, scope, filename, storage_path
+    FROM public.llc_deployment_processing_attachment
+    WHERE processing_id = $1
+    ORDER BY id ASC
+    `,
+    [processingId]
+  );
+
+  const attachments = (att.rows || []).map(a => ({
+    id: a.id,
+    scope: a.scope,             
+    filename: a.filename,
+    storage_path: a.storage_path,
+    url: publicFileUrl(a.storage_path),
+  }));
+
+  res.json({
+    processingId: row.id,
+    llc_id: row.llc_id,
+    evidence_plant: row.evidence_plant,
+    deployment_applicability: row.deployment_applicability,
+    why_not_apply: row.why_not_apply,
+    person: row.person,
+    deployment_description: row.deployment_description,
+    pm: row.pm,
+    dep_reject_reason: row.dep_reject_reason,
+
+    attachments,
+  });
+});
 
 
 // ------------------ LLC LIST ------------------
@@ -2387,8 +2757,6 @@ app.delete("/api/llc/:id", requireAuth, async (req, res) => {
 
 
 
-
-
 /* =========================
    Evidence Deployment
 ========================= */
@@ -2412,6 +2780,21 @@ app.get("/api/llc-list", async (req, res) => {
   }
 });
 
+app.get("/api/llc-list/rejected", async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT id, problem_short
+      FROM public.llc
+      WHERE status = 'DEPLOYMENT_REJECTED'
+      ORDER BY problem_short ASC
+    `);
+
+    res.json(rows);
+  } catch (error) {
+    console.error("❌ Error fetching rejected LLC list:", error);
+    res.status(500).json({ error: "Failed to load LLC list" });
+  }
+});
 
 app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
   const client = await pool.connect();
@@ -2594,17 +2977,7 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
 });
 
 
-
 // ================== START ==================
-(async () => {
-  try {
-    await ensureUsersTable();
-    console.log("✅ users table ready");
-  } catch (e) {
-    console.error("❌ Failed to ensure users table:", e.message);
-  }
-
-  app.listen(PORT, () => {
-    console.log(`🚀 API running on http://localhost:${PORT}`);
-  });
-})();
+app.listen(PORT, () => {
+  console.log(`🚀 API running on http://localhost:${PORT}`);
+});
