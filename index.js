@@ -68,13 +68,6 @@ const emailTransporter = nodemailer.createTransport({
   host: SMTP_HOST,
   port: SMTP_PORT,
   secure: false,
-  tls: { 
-    ciphers: 'SSLv3',
-    rejectUnauthorized: false 
-  },
-  connectionTimeout: 60000,
-  greetingTimeout: 60000,
-  socketTimeout: 60000,
 });
 
 async function convertDocxToPdf({
