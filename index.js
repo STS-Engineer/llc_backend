@@ -1480,9 +1480,9 @@ app.post("/api/llc", requireAuth, upload.any(), async (req, res) => {
         category, problem_short, problem_detail, llc_type, customer,
         product_family, product_type, quality_detection,
         application_label, product_line_label, part_or_machine_number,
-        editor, plant, failure_mode, conclusions, validator
+        editor, plant, failure_mode, conclusions, validator, is_deleted
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
       RETURNING id`,
       [
         llc.category,
@@ -1501,6 +1501,7 @@ app.post("/api/llc", requireAuth, upload.any(), async (req, res) => {
         llc.failure_mode,
         llc.conclusions,
         forcedValidator,
+        false,
       ]
     );
 
@@ -1645,7 +1646,7 @@ app.post("/api/llc", requireAuth, upload.any(), async (req, res) => {
     await client.query(
       `UPDATE public.llc
       SET generated_llc = $1
-      WHERE id = $2`,
+      WHERE id = $2 AND is_deleted IS NOT TRUE`,
       [generatedRel, llcId]
     );
 
@@ -1664,7 +1665,7 @@ app.post("/api/llc", requireAuth, upload.any(), async (req, res) => {
           pm_decision_at = NULL,
           pm_reject_reason = NULL,
           pm_validation_date = NULL
-      WHERE id = $2
+      WHERE id = $2 AND is_deleted IS NOT TRUE
       `,
       [pmToken, llcId]
     );
@@ -1714,6 +1715,7 @@ app.get("/api/llc/:id/pm-review", async (req, res) => {
     SELECT *
     FROM public.llc
     WHERE id = $1
+      AND is_deleted IS NOT TRUE
       AND pm_review_token = $2
       AND (pm_review_token_expires IS NULL OR pm_review_token_expires > NOW())
     `,
@@ -1751,7 +1753,7 @@ app.post("/api/llc/:id/pm-review/decision", async (req, res) => {
           pm_decision_at = NOW(),
           pm_validation_date = NOW(),
           status = 'WAITING_FOR_VALIDATION'
-      WHERE id = $1 AND pm_review_token = $2
+      WHERE id = $1 AND pm_review_token = $2 AND is_deleted IS NOT TRUE
       RETURNING id
       `,
       [llcId, token]
@@ -1770,7 +1772,7 @@ app.post("/api/llc/:id/pm-review/decision", async (req, res) => {
           final_decision = 'PENDING_FOR_VALIDATION',
           final_validation_date = NULL,
           final_reject_reason = NULL
-      WHERE id = $2
+      WHERE id = $2 AND is_deleted IS NOT TRUE
       `,
       [finalToken, llcId]
     );
@@ -1807,7 +1809,7 @@ app.post("/api/llc/:id/pm-review/decision", async (req, res) => {
     SET pm_decision = 'REJECTED',
         pm_decision_at = NOW(),
         pm_reject_reason = $3
-    WHERE id = $1 AND pm_review_token = $2
+    WHERE id = $1 AND pm_review_token = $2 AND is_deleted IS NOT TRUE
     RETURNING *
     `,
     [llcId, token, reason || ""]
@@ -1836,6 +1838,7 @@ app.get("/api/llc/:id/final-review", async (req, res) => {
     SELECT *
     FROM public.llc
     WHERE id = $1
+      AND is_deleted IS NOT TRUE
       AND final_review_token = $2
       AND (final_review_token_expires IS NULL OR final_review_token_expires > NOW())
     `,
@@ -1874,6 +1877,7 @@ app.post("/api/llc/:id/final-review/decision", async (req, res) => {
         final_reject_reason = $4,
         status = $5
     WHERE id = $1
+      AND is_deleted IS NOT TRUE
       AND final_review_token = $2
       AND (final_review_token_expires IS NULL OR final_review_token_expires > NOW())
     RETURNING *
@@ -1949,6 +1953,7 @@ app.get("/api/dep-processing/:processingId/review", async (req, res) => {
     FROM public.llc_deployment_processing p
     JOIN public.llc l ON l.id = p.llc_id
     WHERE p.id = $1
+      AND l.is_deleted IS NOT TRUE
       AND p.dep_review_token = $2
       AND (p.dep_review_token_expires IS NULL OR p.dep_review_token_expires > NOW())
     `,
@@ -2005,7 +2010,7 @@ app.post("/api/dep-processing/:processingId/review/decision", async (req, res) =
 
     // 2) reload llc (source de vérité) to compute targets
     const llcRes = await client.query(
-      `SELECT id, status, plant, product_line_label FROM public.llc WHERE id=$1`,
+      `SELECT id, status, plant, product_line_label FROM public.llc WHERE id=$1 AND is_deleted IS NOT TRUE` ,
       [processingRow.llc_id]
     );
     if (!llcRes.rowCount) throw new Error("LLC not found");
@@ -2040,12 +2045,12 @@ app.post("/api/dep-processing/:processingId/review/decision", async (req, res) =
     // 5) update LLC status
     if (anyRejected) {
       await client.query(
-        `UPDATE public.llc SET status='DEPLOYMENT_REJECTED' WHERE id=$1`,
+        `UPDATE public.llc SET status='DEPLOYMENT_REJECTED' WHERE id=$1 AND is_deleted IS NOT TRUE`,
         [processingRow.llc_id]
       );
     } else if (allApproved) {
       await client.query(
-        `UPDATE public.llc SET status='DEPLOYMENT_VALIDATED' WHERE id=$1`,
+        `UPDATE public.llc SET status='DEPLOYMENT_VALIDATED' WHERE id=$1 AND is_deleted IS NOT TRUE`,
         [processingRow.llc_id]
       );
     } else {
@@ -2183,6 +2188,9 @@ app.get("/api/llc", requireAuth, async (req, res) => {
   try {
     const params = [];
     const whereParts = [];
+
+    // ✅ ignore soft-deleted LLCs
+    whereParts.push("l.is_deleted IS NOT TRUE");
 
     // ✅ filtre plant seulement si pas admin (sur la LLC créatrice)
     if (req.user.role !== "admin") {
@@ -2334,12 +2342,15 @@ app.get("/api/llc/:id", requireAuth, async (req, res) => {
   if (!llcId) return res.status(400).json({ error: "Invalid id" });
 
   try {
-    const llcRes = await pool.query(`SELECT * FROM public.llc WHERE id = $1`, [llcId]);
+    const llcRes = await pool.query(
+      `SELECT * FROM public.llc WHERE id = $1 AND is_deleted IS NOT TRUE`,
+      [llcId]
+    );
     const llc = llcRes.rows[0];
+    if (!llc) return res.status(404).json({ error: "Not found" });
     if (req.user.role !== "admin" && llc.plant !== req.user.plant) {
       return res.status(403).json({ error: "Forbidden" });
     }
-    if (!llc) return res.status(404).json({ error: "Not found" });
 
     const attRes = await pool.query(
       `SELECT id, scope, filename, storage_path
@@ -2401,7 +2412,7 @@ app.put("/api/llc/:id/pm-validate", requireAuth, async (req, res) => {
       `
       UPDATE public.llc
       SET pm_validation_date = NOW()
-      WHERE id = $1
+      WHERE id = $1 AND is_deleted IS NOT TRUE
       RETURNING id, pm_validation_date
       `,
       [llcId]
@@ -2441,7 +2452,7 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
 
     // 0) sécurité: editable seulement si REJECTED (si tu veux)
     const chk = await client.query(
-      "SELECT pm_decision, final_decision FROM public.llc WHERE id=$1",
+      "SELECT pm_decision, final_decision FROM public.llc WHERE id=$1 AND is_deleted IS NOT TRUE",
       [llcId]
     );
     if (!chk.rowCount) throw new Error("Not found");
@@ -2460,7 +2471,7 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
            llc_type=$4, customer=$5, product_family=$6, product_type=$7,
            quality_detection=$8, application_label=$9, product_line_label=$10, part_or_machine_number=$11,
            editor=$12, plant=$13, failure_mode=$14, conclusions=$15, validator=$16
-       WHERE id=$17`,
+       WHERE id=$17 AND is_deleted IS NOT TRUE`,
       [
         llc.category, llc.problem_short, llc.problem_detail,
         llc.llc_type, llc.customer, llc.product_family, llc.product_type,
@@ -2574,7 +2585,7 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
           final_reject_reason = NULL,
           final_review_token = NULL,
           final_review_token_expires = NULL
-      WHERE id = $2
+      WHERE id = $2 AND is_deleted IS NOT TRUE
       `,
       [newPmToken, llcId]
     );
@@ -2585,7 +2596,10 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
     }
 
     // reload DB data (source of truth)
-    const llcRes = await client.query(`SELECT * FROM public.llc WHERE id=$1`, [llcId]);
+    const llcRes = await client.query(
+      `SELECT * FROM public.llc WHERE id=$1 AND is_deleted IS NOT TRUE`,
+      [llcId]
+    );
     const llcDb = llcRes.rows[0];
 
     const attRes = await client.query(
@@ -2698,7 +2712,7 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
     await client.query(
       `UPDATE public.llc
       SET generated_llc = $1
-      WHERE id = $2`,
+      WHERE id = $2 AND is_deleted IS NOT TRUE`,
       [generatedRel, llcId]
     );
 
@@ -2727,9 +2741,9 @@ app.delete("/api/llc/:id", requireAuth, async (req, res) => {
   try {
     await client.query("BEGIN");
 
-    // (Optionnel) Sécurité: autoriser delete فقط للـ plant متاع user
+    // (Optionnel) Sécurité: autoriser delete pour plant user
     const chk = await client.query(
-      "SELECT id FROM public.llc WHERE id=$1 AND plant=$2",
+      "SELECT id FROM public.llc WHERE id=$1 AND plant=$2 AND is_deleted IS NOT TRUE",
       [llcId, req.user.plant]
     );
     if (!chk.rowCount) {
@@ -2737,13 +2751,8 @@ app.delete("/api/llc/:id", requireAuth, async (req, res) => {
       return res.status(404).json({ error: "Not found" });
     }
 
-    // Supprimer d'abord les dépendances (si pas ON DELETE CASCADE)
-    await client.query("DELETE FROM public.llc_root_cause_attachment WHERE root_cause_id IN (SELECT id FROM public.llc_root_cause WHERE llc_id=$1)", [llcId]);
-    await client.query("DELETE FROM public.llc_root_cause WHERE llc_id=$1", [llcId]);
-    await client.query("DELETE FROM public.llc_attachment WHERE llc_id=$1", [llcId]);
-
-    // Enfin supprimer llc
-    await client.query("DELETE FROM public.llc WHERE id=$1", [llcId]);
+    // Soft delete: garder la ligne + ses dépendances
+    await client.query("UPDATE public.llc SET is_deleted = TRUE WHERE id=$1 AND is_deleted IS NOT TRUE", [llcId]);
 
     await client.query("COMMIT");
     res.json({ ok: true });
@@ -2770,6 +2779,7 @@ app.get("/api/llc-list", async (req, res) => {
       SELECT id, problem_short
       FROM public.llc
       WHERE status = 'DEPLOYMENT_IN_PROGRESS'
+        AND is_deleted IS NOT TRUE
       ORDER BY problem_short ASC
     `);
 
@@ -2786,6 +2796,7 @@ app.get("/api/llc-list/rejected", async (req, res) => {
       SELECT id, problem_short
       FROM public.llc
       WHERE status = 'DEPLOYMENT_REJECTED'
+        AND is_deleted IS NOT TRUE
       ORDER BY problem_short ASC
     `);
 
@@ -2812,7 +2823,7 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
       `
       SELECT id, status, plant, product_line_label
       FROM public.llc
-      WHERE id = $1
+      WHERE id = $1 AND is_deleted IS NOT TRUE
       `,
       [payload.llc_id]
     );
@@ -2822,36 +2833,142 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
     }
 
     const llcRow = llcRes.rows[0];
-    if (llcRow.status !== "DEPLOYMENT_IN_PROGRESS") {
-      return res.status(400).json({ error: "LLC is not in DEPLOYMENT_IN_PROGRESS" });
+
+    // ✅ MODE: edit si processingId + token existent
+    const isEditMode = Boolean(payload.processingId && payload.token);
+
+    // ✅ statut attendu selon le mode
+    const expectedStatus = isEditMode ? "DEPLOYMENT_REJECTED" : "DEPLOYMENT_IN_PROGRESS";
+
+    if (llcRow.status !== expectedStatus) {
+      return res.status(400).json({
+        error: `LLC is not in ${expectedStatus}`,
+        llc_status: llcRow.status,
+        expected: expectedStatus,
+      });
     }
 
     await client.query("BEGIN");
 
-    // ✅ 1) Insert processing row
-    const ins = await client.query(
-      `
-      INSERT INTO public.llc_deployment_processing
-        (llc_id, evidence_plant, deployment_applicability,
-         why_not_apply, person, deployment_description, pm)
-      VALUES ($1,$2,$3,$4,$5,$6,$7)
-      RETURNING *
-      `,
-      [
-        payload.llc_id,
-        payload.evidence_plant,
-        payload.deployment_applicability,
-        payload.why_not_apply || "",
-        payload.person,
-        payload.deployment_description,
-        payload.pm,
-      ]
-    );
+    // =========================================================
+    // ✅ 1) CREATE vs EDIT processing row
+    // =========================================================
+    let processingRow;
+    let processingId;
 
-    const processingRow = ins.rows[0];
-    const processingId = processingRow.id;
+    if (isEditMode) {
+      // ✅ 1.a) vérifier le token de rework sur le processing
+      const chk = await client.query(
+        `
+        SELECT *
+        FROM public.llc_deployment_processing
+        WHERE id = $1
+          AND llc_id = $2
+          AND dep_rework_token = $3
+          AND (dep_rework_token_expires IS NULL OR dep_rework_token_expires > NOW())
+        `,
+        [Number(payload.processingId), payload.llc_id, String(payload.token)]
+      );
 
-    // ✅ 2) Save uploaded files into llc_deployment_processing_attachment
+      if (!chk.rowCount) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "Invalid or expired rework link" });
+      }
+
+      processingId = Number(payload.processingId);
+
+      // ✅ 1.b) update champs (on remet le workflow en PENDING)
+      const upd = await client.query(
+        `
+        UPDATE public.llc_deployment_processing
+        SET
+          deployment_applicability = $2,
+          why_not_apply = $3,
+          person = $4,
+          deployment_description = $5,
+          pm = $6,
+
+          dep_decision = 'PENDING_FOR_APPROVAL',
+          dep_decision_at = NULL,
+          dep_reject_reason = NULL,
+
+          -- optionnel: on peut aussi reset le review token (ou le regénérer plus bas)
+          dep_review_token = NULL,
+          dep_review_token_expires = NULL
+        WHERE id = $1
+        RETURNING *
+        `,
+        [
+          processingId,
+          payload.deployment_applicability,
+          payload.why_not_apply || "",
+          payload.person,
+          payload.deployment_description,
+          payload.pm,
+        ]
+      );
+
+      processingRow = upd.rows[0];
+
+      // ✅ 1.c) optionnel: supprimer certains anciens attachments si tu les passes depuis le front
+      // payload.deleteAttachmentIds = [1,2,3]
+      if (Array.isArray(payload.deleteAttachmentIds) && payload.deleteAttachmentIds.length) {
+        // récupérer paths pour supprimer physiquement (optionnel)
+        const toDel = await client.query(
+          `
+          SELECT id, storage_path
+          FROM public.llc_deployment_processing_attachment
+          WHERE processing_id = $1
+            AND id = ANY($2::int[])
+          `,
+          [processingId, payload.deleteAttachmentIds]
+        );
+
+        await client.query(
+          `
+          DELETE FROM public.llc_deployment_processing_attachment
+          WHERE processing_id = $1
+            AND id = ANY($2::int[])
+          `,
+          [processingId, payload.deleteAttachmentIds]
+        );
+
+        // supprimer fichiers disque (optionnel)
+        for (const row of toDel.rows) {
+          const abs = path.join(process.cwd(), row.storage_path);
+          try {
+            if (fs.existsSync(abs)) fs.unlinkSync(abs);
+          } catch {}
+        }
+      }
+    } else {
+      // ✅ CREATE (ton code actuel)
+      const ins = await client.query(
+        `
+        INSERT INTO public.llc_deployment_processing
+          (llc_id, evidence_plant, deployment_applicability,
+           why_not_apply, person, deployment_description, pm)
+        VALUES ($1,$2,$3,$4,$5,$6,$7)
+        RETURNING *
+        `,
+        [
+          payload.llc_id,
+          payload.evidence_plant,
+          payload.deployment_applicability,
+          payload.why_not_apply || "",
+          payload.person,
+          payload.deployment_description,
+          payload.pm,
+        ]
+      );
+
+      processingRow = ins.rows[0];
+      processingId = processingRow.id;
+    }
+
+    // =========================================================
+    // ✅ 2) Save NEW uploaded files into attachments table
+    // =========================================================
     const files = req.files || [];
     const scopeMap = {
       beforeDepFiles: "BEFORE_DEP",
@@ -2874,14 +2991,23 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
       );
     }
 
-    // ✅ 3) Reload full LLC (source vérité) + générer PDF DEP tout de suite (par plant)
-    const llcFull = await client.query(`SELECT * FROM public.llc WHERE id=$1`, [payload.llc_id]);
+    // =========================================================
+    // ✅ 3) Reload full LLC + regenerate PDF DEP (reflect latest data/files)
+    // =========================================================
+    const llcFull = await client.query(
+      `SELECT * FROM public.llc WHERE id=$1 AND is_deleted IS NOT TRUE`,
+      [payload.llc_id]
+    );
     const llcRowFull = llcFull.rows[0];
+
+    // Important: recharger processingRow si edit (car on l’a update)
+    const procFull = await client.query(`SELECT * FROM public.llc_deployment_processing WHERE id=$1`, [processingId]);
+    const processingRowFull = procFull.rows[0];
 
     const generatedRel = await generateDeploymentPdfForProcessing({
       client,
       llcRow: llcRowFull,
-      processingRow: processingRow,
+      processingRow: processingRowFull,
     });
 
     await client.query(
@@ -2893,7 +3019,9 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
       [generatedRel, processingId]
     );
 
-    // ✅ 4) créer token + statut PENDING pour l’admin
+    // =========================================================
+    // ✅ 4) créer (ou recréer) token + statut PENDING pour l’admin
+    // =========================================================
     const depToken = generateDepToken();
 
     await client.query(
@@ -2909,7 +3037,10 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
       [depToken, processingId]
     );
 
-    // ✅ 5) Check si tous les plants ont répondu -> move LLC to DEPLOYMENT_PROCESSING (comme avant)
+    // =========================================================
+    // ✅ 5) Check si tous les plants ont répondu -> move LLC to DEPLOYMENT_PROCESSING
+    // (en edit mode, tu peux le laisser tel quel : ça ne casse rien)
+    // =========================================================
     const dist = buildDistributionExcludingPlant({
       productLineLabel: llcRow.product_line_label,
       creatorPlant: llcRow.plant,
@@ -2932,12 +3063,14 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
 
     if (targetCount > 0 && doneCount >= targetCount) {
       await client.query(
-        `UPDATE public.llc SET status='DEPLOYMENT_PROCESSING' WHERE id=$1`,
+        `UPDATE public.llc SET status='DEPLOYMENT_PROCESSING' WHERE id=$1 AND is_deleted IS NOT TRUE`,
         [payload.llc_id]
       );
     }
 
-    // ✅ préparer l’envoi mail (MAIS après COMMIT)
+    // =========================================================
+    // ✅ mail after commit
+    // =========================================================
     const adminEmail = await getAdminEmail();
     mailAfterCommit = async () => {
       if (!adminEmail) {
@@ -2955,14 +3088,14 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
 
     await client.query("COMMIT");
 
-    // ✅ réponse
     res.json({
       ok: true,
-      saved: { ...processingRow, generated_dep: generatedRel },
+      saved: { ...processingRowFull, generated_dep: generatedRel },
       fileCount: files.length,
+      isEditMode,
+      processingId,
     });
 
-    // ✅ mail non bloquant après commit
     Promise.resolve()
       .then(() => mailAfterCommit?.())
       .catch((err) => console.error("❌ DEP review email failed:", err?.message || err));
