@@ -68,10 +68,22 @@ const emailTransporter = nodemailer.createTransport({
   host: SMTP_HOST,
   port: SMTP_PORT,
   secure: false,
-  auth: {
-    user: EMAIL_FROM,
-    pass: "bdhsuikjduzsjh",
+  tls: { 
+    minVersion: 'TLSv1.2',
+    rejectUnauthorized: false 
   },
+  connectionTimeout: 60000,
+  greetingTimeout: 60000,
+  socketTimeout: 60000,
+    
+  // POOLING - Le plus important pour la vitesse
+  pool: true,
+  maxConnections: 20,
+  maxMessages: 100,
+  
+  // Rate limiting pour protéger Outlook
+  rateDelta: 100,             // 100ms entre emails = 10/sec
+  rateLimit: 10,              // Maximum 10 emails/sec
 });
 
 async function convertDocxToPdf({
