@@ -1089,12 +1089,50 @@ function getDistributionPlantsForLlcRow(llcRow) {
 }
 
 // ================== JWT helpers ==================
-function signToken(payload) {
+const ACCESS_TOKEN_TTL = process.env.JWT_ACCESS_EXPIRES_IN || process.env.JWT_EXPIRES_IN || "15m";
+const REFRESH_TOKEN_TTL_DAYS = Number(process.env.REFRESH_TOKEN_TTL_DAYS || 7);
+
+function signAccessToken(payload) {
   const secret = process.env.JWT_SECRET;
   if (!secret) throw new Error("JWT_SECRET is missing in .env");
   return jwt.sign(payload, secret, {
-    expiresIn: process.env.JWT_EXPIRES_IN || "7d",
+    expiresIn: ACCESS_TOKEN_TTL,
   });
+}
+
+function generateRefreshToken() {
+  return crypto.randomBytes(32).toString("hex");
+}
+
+function hashRefreshToken(token) {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+function refreshTokenExpiresAt() {
+  return new Date(Date.now() + REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000);
+}
+
+async function createAndStoreRefreshToken(userId, client = pool) {
+  const token = generateRefreshToken();
+  const tokenHash = hashRefreshToken(token);
+  const expiresAt = refreshTokenExpiresAt();
+
+  await client.query(
+    `INSERT INTO public.refresh_tokens (user_id, token_hash, expires_at)
+     VALUES ($1, $2, $3)`,
+    [userId, tokenHash, expiresAt]
+  );
+
+  return token;
+}
+
+async function revokeRefreshTokenByHash(tokenHash, client = pool) {
+  await client.query(
+    `UPDATE public.refresh_tokens
+     SET revoked_at = NOW()
+     WHERE token_hash = $1 AND revoked_at IS NULL`,
+    [tokenHash]
+  );
 }
 
 function requireAuth(req, res, next) {
@@ -1271,9 +1309,13 @@ const ResetPasswordSchema = z.object({
   email: z.string().email().optional(),
 });
 
+const RefreshTokenSchema = z.object({
+  refresh_token: z.string().min(1),
+});
+
 const EvidenceDeploymentSchema = z.object({
   llc_id: z.number(),
-  deployment_applicability: z.string().min(1, "Required"), // ✅ rename
+  deployment_applicability: z.string().min(1, "Required"), 
   why_not_apply: z.string().max(2000).optional(),
   evidence_plant: z.string().min(1, "Required"),
   person: z.string().min(1, "Required").max(200),
@@ -1316,9 +1358,10 @@ app.post("/api/auth/signup", async (req, res) => {
     );
 
     const user = r.rows[0];
-    const token = signToken({ id: user.id, email: user.email, plant: user.plant, role: user.role });
+    const accessToken = signAccessToken({ id: user.id, email: user.email, plant: user.plant, role: user.role });
+    const refreshToken = await createAndStoreRefreshToken(user.id);
 
-    res.json({ token, user });
+    res.json({ token: accessToken, access_token: accessToken, refresh_token: refreshToken, user });
   } catch (e) {
     res.status(400).json({ error: e.message || "Signup failed" });
   }
@@ -1349,14 +1392,107 @@ app.post("/api/auth/signin", async (req, res) => {
       const ok = await bcrypt.compare(password, u.password_hash);
       if (ok) {
         const user = { id: u.id, name: u.name, email: u.email, plant: u.plant, role: u.role };
-        const token = signToken({ id: u.id, email: u.email, plant: u.plant, role: u.role });
-        return res.json({ token, user });
+        const accessToken = signAccessToken({ id: u.id, email: u.email, plant: u.plant, role: u.role });
+        const refreshToken = await createAndStoreRefreshToken(u.id);
+        return res.json({ token: accessToken, access_token: accessToken, refresh_token: refreshToken, user });
       }
     }
 
     return res.status(401).json({ error: "Invalid credentials" });
   } catch (e) {
     res.status(400).json({ error: e.message || "Signin failed" });
+  }
+});
+
+app.post("/api/auth/refresh", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { refresh_token } = RefreshTokenSchema.parse(req.body);
+    const tokenHash = hashRefreshToken(String(refresh_token || "").trim());
+
+    await client.query("BEGIN");
+
+    const r = await client.query(
+      `
+      SELECT rt.id, rt.user_id, rt.expires_at, rt.revoked_at,
+             u.name, u.email, u.plant, u.role
+      FROM public.refresh_tokens rt
+      JOIN public.users u ON u.id = rt.user_id
+      WHERE rt.token_hash = $1
+      FOR UPDATE
+      `,
+      [tokenHash]
+    );
+
+    if (!r.rowCount) {
+      await client.query("ROLLBACK");
+      return res.status(401).json({ error: "Invalid or expired refresh token" });
+    }
+
+    const row = r.rows[0];
+    if (row.revoked_at || new Date(row.expires_at) <= new Date()) {
+      await client.query("ROLLBACK");
+      return res.status(401).json({ error: "Invalid or expired refresh token" });
+    }
+
+    const newRefreshToken = generateRefreshToken();
+    const newRefreshHash = hashRefreshToken(newRefreshToken);
+    const newRefreshExpires = refreshTokenExpiresAt();
+
+    await client.query(
+      `INSERT INTO public.refresh_tokens (user_id, token_hash, expires_at)
+       VALUES ($1, $2, $3)`,
+      [row.user_id, newRefreshHash, newRefreshExpires]
+    );
+
+    await client.query(
+      `UPDATE public.refresh_tokens
+       SET revoked_at = NOW()
+       WHERE id = $1`,
+      [row.id]
+    );
+
+    await client.query("COMMIT");
+
+    const accessToken = signAccessToken({
+      id: row.user_id,
+      email: row.email,
+      plant: row.plant,
+      role: row.role,
+    });
+
+    const user = {
+      id: row.user_id,
+      name: row.name,
+      email: row.email,
+      plant: row.plant,
+      role: row.role,
+    };
+
+    return res.json({
+      token: accessToken,
+      access_token: accessToken,
+      refresh_token: newRefreshToken,
+      user,
+    });
+  } catch (e) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {}
+    return res.status(400).json({ error: e?.message || "Refresh failed" });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/api/auth/logout", async (req, res) => {
+  try {
+    const { refresh_token } = RefreshTokenSchema.parse(req.body);
+    const tokenHash = hashRefreshToken(String(refresh_token || "").trim());
+    await revokeRefreshTokenByHash(tokenHash);
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(400).json({ error: e?.message || "Logout failed" });
   }
 });
 
