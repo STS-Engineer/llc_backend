@@ -56,19 +56,12 @@ app.use((req, res, next) => {
 });
 
 // =========================
-// CONFIGURATION FIXE POUR OUTLOOK
+// CONFIGURATION SMTP 
 // =========================
-const SMTP_HOST = "avocarbon-com.mail.protection.outlook.com";
-const SMTP_PORT = 25;
-const EMAIL_FROM_NAME = "Administration STS";
-const EMAIL_FROM = "administration.STS@avocarbon.com";
-
-console.log('📧 Configuration SMTP Outlook:', {
-  host: SMTP_HOST,
-  port: SMTP_PORT,
-  from: EMAIL_FROM,
-  fromName: EMAIL_FROM_NAME
-});
+const SMTP_HOST = process.env.SMTP_HOST || "avocarbon-com.mail.protection.outlook.com";
+const SMTP_PORT = Number(process.env.SMTP_PORT || 25);
+const EMAIL_FROM_NAME = process.env.EMAIL_FROM_NAME || "Administration STS";
+const EMAIL_FROM = process.env.EMAIL_FROM || "administration.STS@avocarbon.com";
 
 // Configuration du transporteur email
 const emailTransporter = nodemailer.createTransport({
@@ -79,10 +72,9 @@ const emailTransporter = nodemailer.createTransport({
     ciphers: 'SSLv3',
     rejectUnauthorized: false 
   },
-  connectionTimeout: 10000,
-  greetingTimeout: 10000,
-  socketTimeout: 10000,
-  debug: process.env.NODE_ENV === 'development'
+  connectionTimeout: 60000,
+  greetingTimeout: 60000,
+  socketTimeout: 60000,
 });
 
 async function convertDocxToPdf({
