@@ -68,6 +68,10 @@ const emailTransporter = nodemailer.createTransport({
   host: SMTP_HOST,
   port: SMTP_PORT,
   secure: false,
+  auth: {
+    user: EMAIL_FROM,
+    pass: "bdhsuikjduzsjh",
+  },
 });
 
 async function convertDocxToPdf({
