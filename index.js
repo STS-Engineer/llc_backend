@@ -64,7 +64,7 @@ const EMAIL_FROM_NAME = process.env.EMAIL_FROM_NAME || "Administration STS";
 const EMAIL_FROM = process.env.EMAIL_FROM || "administration.STS@avocarbon.com";
 
 // Configuration du transporteur email
-const emailTransporter = nodemailer.createTransport({
+const createEmailTransporter = nodemailer.createTransport({
     host: SMTP_HOST,
     port: SMTP_PORT,
     secure: false,
@@ -174,7 +174,8 @@ async function sendResetPasswordMail({ to, resetLink }) {
     </div>
   `;
 
-  await emailTransporter.sendMail({
+  const transporter = createEmailTransporter(); 
+  await transporter.sendMail({
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
     subject: "Password reset request",
@@ -226,7 +227,8 @@ async function sendPmReviewMail({ to, llcId, token }) {
     </div>
   `;
 
-  await emailTransporter.sendMail({
+  const transporter = createEmailTransporter(); 
+  await transporter.sendMail({
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
     subject: `LLC #${llcId} – PM approval required`,
@@ -295,7 +297,8 @@ async function sendFinalReviewMail({ to, llcId, token }) {
     </div>
   `;
 
-  await emailTransporter.sendMail({
+  const transporter = createEmailTransporter(); 
+  await transporter.sendMail({
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
     subject: `LLC #${llcId} – Final approval required`,
@@ -340,7 +343,8 @@ async function sendPmDecisionResultMail({ to, llcId, decision, reason }) {
     </div>
   `;
 
-  await emailTransporter.sendMail({
+  const transporter = createEmailTransporter(); 
+  await transporter.sendMail({
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
     subject: `LLC #${llcId} – PM decision: ${decision}`,
@@ -387,7 +391,8 @@ async function sendFinalDecisionResultMail({ to, llcId, decision, reason, genera
     </div>
   `;
 
-  await emailTransporter.sendMail({
+  const transporter = createEmailTransporter(); 
+  await transporter.sendMail({
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
     subject: `LLC #${llcId} – Final decision: ${decision}`,
@@ -486,7 +491,8 @@ async function sendDistributionMail({
     }
   }
 
-  await emailTransporter.sendMail({
+  const transporter = createEmailTransporter(); 
+  await transporter.sendMail({
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to: toList.join(","),
     subject: `LLC #${llcId} – Distribution`,
@@ -545,7 +551,8 @@ async function sendDistributionInfoToAdminMail({
     </div>
   `;
 
-  await emailTransporter.sendMail({
+  const transporter = createEmailTransporter(); 
+  await transporter.sendMail({
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
     subject: `LLC #${llcId} – Distributed to ${distributedPlants?.length || 0} plant(s)`,
@@ -793,7 +800,8 @@ async function sendDepReviewMail({ to, llcId, processingId, token, evidencePlant
     </div>
   `;
 
-  await emailTransporter.sendMail({
+  const transporter = createEmailTransporter(); 
+  await transporter.sendMail({
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
     subject: `Evidence need your approval from plant: ${evidencePlant || "N/A"}`,
@@ -845,7 +853,8 @@ async function sendDepReworkMailToEditor({ to, llcId, processingId, token, reaso
     </div>
   `;
 
-  await emailTransporter.sendMail({
+  const transporter = createEmailTransporter(); 
+  await transporter.sendMail({
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
     subject: `DEP LLC #${llcId} – Rework required (${evidencePlant || "N/A"})`,
@@ -2093,12 +2102,12 @@ app.post("/api/dep-processing/:processingId/review/decision", async (req, res) =
 
       // 4) préparer mail après commit (comme tu fais ailleurs)
       reworkMailAfterCommit = async () => {
-        if (!editorEmail) {
+        if (!personEmail) {
           console.error("❌ No editor email found. Rework mail not sent.");
           return;
         }
         await sendDepReworkMailToEditor({
-          to: editorEmail,
+          to: personEmail,
           llcId: processingRow.llc_id,
           processingId: processingRow.id,
           token: reworkToken,
