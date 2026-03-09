@@ -67,8 +67,9 @@ const EMAIL_FROM = process.env.EMAIL_FROM || "administration.STS@avocarbon.com";
 const createEmailTransporter = () =>
   nodemailer.createTransport({
     host: SMTP_HOST,
-    port: SMTP_PORT,
+    port: 587, // ← au lieu de 25
     secure: false,
+    requireTLS: true, // ← forcer STARTTLS
     tls: { rejectUnauthorized: false },
 });
 
