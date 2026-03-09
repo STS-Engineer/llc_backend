@@ -64,13 +64,11 @@ const EMAIL_FROM_NAME = process.env.EMAIL_FROM_NAME || "Administration STS";
 const EMAIL_FROM = process.env.EMAIL_FROM || "administration.STS@avocarbon.com";
 
 // Configuration du transporteur email
-const createEmailTransporter = () =>
-  nodemailer.createTransport({
-    host: SMTP_HOST,
-    port: 587, // ← au lieu de 25
-    secure: false,
-    requireTLS: true, // ← forcer STARTTLS
-    tls: { rejectUnauthorized: false },
+const emailTransporter = nodemailer.createTransport({
+  host: SMTP_HOST,
+  port: SMTP_PORT,
+  secure: false,
+  tls: { rejectUnauthorized: false }
 });
 
 async function convertDocxToPdf({
@@ -176,8 +174,7 @@ async function sendResetPasswordMail({ to, resetLink }) {
     </div>
   `;
 
-  const transporter = createEmailTransporter(); 
-  await transporter.sendMail({
+  await emailTransporter.sendMail({
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
     subject: "Password reset request",
@@ -229,8 +226,7 @@ async function sendPmReviewMail({ to, llcId, token }) {
     </div>
   `;
 
-  const transporter = createEmailTransporter(); 
-  await transporter.sendMail({
+  await emailTransporter.sendMail({
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
     subject: `LLC #${llcId} – PM approval required`,
@@ -299,8 +295,7 @@ async function sendFinalReviewMail({ to, llcId, token }) {
     </div>
   `;
 
-  const transporter = createEmailTransporter(); 
-  await transporter.sendMail({
+  await emailTransporter.sendMail({
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
     subject: `LLC #${llcId} – Final approval required`,
@@ -345,8 +340,7 @@ async function sendPmDecisionResultMail({ to, llcId, decision, reason }) {
     </div>
   `;
 
-  const transporter = createEmailTransporter(); 
-  await transporter.sendMail({
+  await emailTransporter.sendMail({
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
     subject: `LLC #${llcId} – PM decision: ${decision}`,
@@ -393,8 +387,7 @@ async function sendFinalDecisionResultMail({ to, llcId, decision, reason, genera
     </div>
   `;
 
-  const transporter = createEmailTransporter(); 
-  await transporter.sendMail({
+  await emailTransporter.sendMail({
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
     subject: `LLC #${llcId} – Final decision: ${decision}`,
@@ -493,8 +486,7 @@ async function sendDistributionMail({
     }
   }
 
-  const transporter = createEmailTransporter(); 
-  await transporter.sendMail({
+  await emailTransporter.sendMail({
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to: toList.join(","),
     subject: `LLC #${llcId} – Distribution`,
@@ -553,8 +545,7 @@ async function sendDistributionInfoToAdminMail({
     </div>
   `;
 
-  const transporter = createEmailTransporter(); 
-  await transporter.sendMail({
+  await emailTransporter.sendMail({
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
     subject: `LLC #${llcId} – Distributed to ${distributedPlants?.length || 0} plant(s)`,
@@ -802,8 +793,7 @@ async function sendDepReviewMail({ to, llcId, processingId, token, evidencePlant
     </div>
   `;
 
-  const transporter = createEmailTransporter(); 
-  await transporter.sendMail({
+  await emailTransporter.sendMail({
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
     subject: `Evidence need your approval from plant: ${evidencePlant || "N/A"}`,
@@ -855,8 +845,7 @@ async function sendDepReworkMailToEditor({ to, llcId, processingId, token, reaso
     </div>
   `;
 
-  const transporter = createEmailTransporter(); 
-  await transporter.sendMail({
+  await emailTransporter.sendMail({
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
     subject: `DEP LLC #${llcId} – Rework required (${evidencePlant || "N/A"})`,
@@ -2105,7 +2094,7 @@ app.post("/api/dep-processing/:processingId/review/decision", async (req, res) =
       // 4) préparer mail après commit (comme tu fais ailleurs)
       reworkMailAfterCommit = async () => {
         if (!personEmail) {
-          console.error("❌ No editor email found. Rework mail not sent.");
+          console.error("❌ No person email found. Rework mail not sent.");
           return;
         }
         await sendDepReworkMailToEditor({
