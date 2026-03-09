@@ -64,7 +64,8 @@ const EMAIL_FROM_NAME = process.env.EMAIL_FROM_NAME || "Administration STS";
 const EMAIL_FROM = process.env.EMAIL_FROM || "administration.STS@avocarbon.com";
 
 // Configuration du transporteur email
-const createEmailTransporter = nodemailer.createTransport({
+const createEmailTransporter = () =>
+  nodemailer.createTransport({
     host: SMTP_HOST,
     port: SMTP_PORT,
     secure: false,
