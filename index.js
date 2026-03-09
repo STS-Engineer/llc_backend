@@ -65,25 +65,10 @@ const EMAIL_FROM = process.env.EMAIL_FROM || "administration.STS@avocarbon.com";
 
 // Configuration du transporteur email
 const emailTransporter = nodemailer.createTransport({
-  host: SMTP_HOST,
-  port: SMTP_PORT,
-  secure: false,
-  tls: { 
-    minVersion: 'TLSv1.2',
-    rejectUnauthorized: false 
-  },
-  connectionTimeout: 60000,
-  greetingTimeout: 60000,
-  socketTimeout: 60000,
-    
-  // POOLING - Le plus important pour la vitesse
-  pool: true,
-  maxConnections: 20,
-  maxMessages: 100,
-  
-  // Rate limiting pour protéger Outlook
-  rateDelta: 100,             // 100ms entre emails = 10/sec
-  rateLimit: 10,              // Maximum 10 emails/sec
+    host: SMTP_HOST,
+    port: SMTP_PORT,
+    secure: false,
+    tls: { rejectUnauthorized: false },
 });
 
 async function convertDocxToPdf({
@@ -257,7 +242,7 @@ function generateFinalToken() {
 
 async function getLlcEditorAndValidator(llcId) {
   const r = await pool.query(
-    `SELECT editor, validator, plant FROM public.llc WHERE id=$1`,
+    `SELECT editor, validator, plant FROM public.llc WHERE id=$1 AND is_deleted IS NOT TRUE`,
     [llcId]
   );
   if (!r.rowCount) return { editor: "", validator: "", plant: "" };
@@ -411,7 +396,7 @@ async function sendFinalDecisionResultMail({ to, llcId, decision, reason, genera
 }
 
 async function getLlcEditorEmail(llcId) {
-  const r = await pool.query(`SELECT editor, generated_llc FROM public.llc WHERE id=$1`, [llcId]);
+  const r = await pool.query(`SELECT editor, generated_llc FROM public.llc WHERE id=$1 AND is_deleted IS NOT TRUE`, [llcId]);
   if (!r.rowCount) return { editorEmail: "", generated_llc: "" };
   return { editorEmail: r.rows[0].editor || "", generated_llc: r.rows[0].generated_llc || "" };
 }
