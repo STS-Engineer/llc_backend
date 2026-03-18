@@ -7,7 +7,7 @@ const { z } = require("zod");
 const { Pool } = require("pg");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
-const nodemailer = require('nodemailer');
+const nodemailer = require("nodemailer");
 const crypto = require("crypto");
 
 // ✅ DOCX generation
@@ -26,27 +26,34 @@ dotenv.config();
 // ================== CONFIG ==================
 const PORT = process.env.PORT || 3001;
 const UPLOAD_DIR = process.env.UPLOAD_DIR || "uploads";
-const ALLOWED_ORIGINS = ["https://avocarbon-llc.azurewebsites.net", "http://localhost:3000", "http://localhost:3002"];
+
+const FRONTEND_BASE_URL = process.env.FRONTEND_BASE_URL || "https://avocarbon-llc.azurewebsites.net";
+const API_BASE_URL = process.env.API_BASE_URL || "https://llc-back.azurewebsites.net";
+const FORM_BASE_URL = process.env.FRONTEND_DEP_FORM_URL || "https://evidence-deployment.azurewebsites.net";
+
+const ALLOWED_ORIGINS = [
+  "https://avocarbon-llc.azurewebsites.net",
+  "http://localhost:3000",
+  "http://localhost:3002",
+];
+
 const RESET_TOKEN_TTL_HOURS = Number(process.env.RESET_TOKEN_TTL_HOURS || 1);
 
 // ================== APP ==================
 const app = express();
 
-// ✅ JSON body parser (needed for auth)
+// ✅ JSON body parser
 app.use(express.json({ limit: "2mb" }));
 
 // ================== CORS MANUEL ==================
 app.use((req, res, next) => {
   const origin = req.headers.origin;
 
-  // ✅ si origin existe et est dans la liste -> autoriser
   if (origin && ALLOWED_ORIGINS.includes(origin)) {
     res.header("Access-Control-Allow-Origin", origin);
   }
 
-  // ✅ important pour caching / preflight
   res.header("Vary", "Origin");
-
   res.header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
   res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
   res.header("Access-Control-Allow-Credentials", "true");
@@ -56,19 +63,20 @@ app.use((req, res, next) => {
 });
 
 // =========================
-// CONFIGURATION SMTP 
+// CONFIGURATION SMTP
 // =========================
-const SMTP_HOST = process.env.SMTP_HOST || "avocarbon-com.mail.protection.outlook.com";
+const SMTP_HOST =
+  process.env.SMTP_HOST || "avocarbon-com.mail.protection.outlook.com";
 const SMTP_PORT = Number(process.env.SMTP_PORT || 25);
 const EMAIL_FROM_NAME = process.env.EMAIL_FROM_NAME || "Administration STS";
-const EMAIL_FROM = process.env.EMAIL_FROM || "administration.STS@avocarbon.com";
+const EMAIL_FROM =
+  process.env.EMAIL_FROM || "administration.STS@avocarbon.com";
 
-// Configuration du transporteur email
 const emailTransporter = nodemailer.createTransport({
   host: SMTP_HOST,
   port: SMTP_PORT,
   secure: false,
-  tls: { rejectUnauthorized: false }
+  tls: { rejectUnauthorized: false },
 });
 
 async function convertDocxToPdf({
@@ -84,13 +92,12 @@ async function convertDocxToPdf({
     throw new Error(`Output directory not found: ${outputDirAbs}`);
   }
 
-  // Détection automatique de LibreOffice sous Windows
   let soffice = sofficePath;
   if (!soffice) {
     const candidates = [
-      "C:\\\\Program Files\\\\LibreOffice\\\\program\\\\soffice.exe",
-      "C:\\\\Program Files (x86)\\\\LibreOffice\\\\program\\\\soffice.exe",
-      "soffice", // fallback si dans le PATH
+      "C:\\Program Files\\LibreOffice\\program\\soffice.exe",
+      "C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe",
+      "soffice",
     ];
 
     soffice = candidates.find((p) => {
@@ -106,7 +113,6 @@ async function convertDocxToPdf({
     }
   }
 
-  // Conversion DOCX → PDF
   await execFileAsync(soffice, [
     "--headless",
     "--nologo",
@@ -140,10 +146,10 @@ function hashResetToken(token) {
 }
 
 function buildResetLink({ token, email }) {
-  const FRONTEND_URL = process.env.FRONTEND_BASE_URL || "https://avocarbon-llc.azurewebsites.net";
-  const base = FRONTEND_URL.replace(/\/$/, "");
-  const query = `token=${encodeURIComponent(token)}${email ? `&email=${encodeURIComponent(email)}` : ""}`;
-  return `${base}/reset-password?${query}`;
+  const query = `token=${encodeURIComponent(token)}${
+    email ? `&email=${encodeURIComponent(email)}` : ""
+  }`;
+  return `${FRONTEND_BASE_URL}/reset-password?${query}`;
 }
 
 async function sendResetPasswordMail({ to, resetLink }) {
@@ -189,8 +195,9 @@ function generatePmToken() {
 }
 
 async function sendPmReviewMail({ to, llcId, token }) {
-  const FRONTEND_URL = process.env.FRONTEND_BASE_URL || "https://avocarbon-llc.azurewebsites.net";
-  const reviewLink = `${FRONTEND_URL}/pm-review/${llcId}?token=${encodeURIComponent(token)}`;
+  const reviewLink = `${FRONTEND_BASE_URL}/pm-review/${llcId}?token=${encodeURIComponent(
+    token
+  )}`;
 
   const html = `
     <div style="font-family:Segoe UI, Arial, sans-serif; line-height:1.6">
@@ -230,7 +237,7 @@ async function sendPmReviewMail({ to, llcId, token }) {
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
     subject: `LLC #${llcId} – PM approval required`,
-    html
+    html,
   });
 
   console.log(`📨 PM approval email sent to ${to} for LLC #${llcId}`);
@@ -254,8 +261,9 @@ async function getLlcEditorAndValidator(llcId) {
 }
 
 async function sendFinalReviewMail({ to, llcId, token }) {
-  const FRONTEND_URL = process.env.FRONTEND_BASE_URL || "https://avocarbon-llc.azurewebsites.net";
-  const reviewLink = `${FRONTEND_URL}/final-review/${llcId}?token=${encodeURIComponent(token)}`;
+  const reviewLink = `${FRONTEND_BASE_URL}/final-review/${llcId}?token=${encodeURIComponent(
+    token
+  )}`;
 
   const { editor, validator, plant } = await getLlcEditorAndValidator(llcId);
 
@@ -306,9 +314,8 @@ async function sendFinalReviewMail({ to, llcId, token }) {
 }
 
 async function sendPmDecisionResultMail({ to, llcId, decision, reason }) {
-  const FRONTEND_URL = process.env.FRONTEND_BASE_URL || "https://avocarbon-llc.azurewebsites.net";
-  const viewLink = `${FRONTEND_URL}/qualityLessonLearned`;
-  const editLink = `${FRONTEND_URL}/llc/${llcId}/edit`;
+  const viewLink = `${FRONTEND_BASE_URL}/qualityLessonLearned`;
+  const editLink = `${FRONTEND_BASE_URL}/llc/${llcId}/edit`;
 
   const isRejected = decision === "REJECTED";
 
@@ -317,12 +324,17 @@ async function sendPmDecisionResultMail({ to, llcId, decision, reason }) {
       <h2>LLC #${llcId} – PM approval result</h2>
 
       <p>
-        PM decision: <b style="color:${isRejected ? "#b91c1c" : "#047857"}">${decision}</b>
+        PM decision: <b style="color:${
+          isRejected ? "#b91c1c" : "#047857"
+        }">${decision}</b>
       </p>
 
       ${
         isRejected
-          ? `<p><b>Reason:</b><br/>${String(reason || "").replaceAll("\n", "<br/>")}</p>
+          ? `<p><b>Reason:</b><br/>${String(reason || "").replaceAll(
+              "\n",
+              "<br/>"
+            )}</p>
              <p style="margin:24px 0">
                <a href="${editLink}"
                   style="background:#ef7807;color:#fff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600;display:inline-block;">
@@ -348,11 +360,15 @@ async function sendPmDecisionResultMail({ to, llcId, decision, reason }) {
   });
 }
 
-async function sendFinalDecisionResultMail({ to, llcId, decision, reason, generated_llc }) {
-  const FRONTEND_URL = process.env.FRONTEND_BASE_URL || "https://avocarbon-llc.azurewebsites.net";
-  const editLink = `${FRONTEND_URL}/llc/${llcId}/edit`;
-
-  const docxLink = generated_llc ? `${FRONTEND_URL}/${generated_llc}` : "";
+async function sendFinalDecisionResultMail({
+  to,
+  llcId,
+  decision,
+  reason,
+  generated_llc,
+}) {
+  const editLink = `${FRONTEND_BASE_URL}/llc/${llcId}/edit`;
+  const docxLink = generated_llc || "";
   const isRejected = decision === "REJECTED";
 
   const html = `
@@ -360,12 +376,17 @@ async function sendFinalDecisionResultMail({ to, llcId, decision, reason, genera
       <h2>LLC #${llcId} – Final approval result</h2>
 
       <p>
-        Final decision: <b style="color:${isRejected ? "#b91c1c" : "#047857"}">${decision}</b>
+        Final decision: <b style="color:${
+          isRejected ? "#b91c1c" : "#047857"
+        }">${decision}</b>
       </p>
 
       ${
         isRejected
-          ? `<p><b>Reason:</b><br/>${String(reason || "").replaceAll("\n", "<br/>")}</p>
+          ? `<p><b>Reason:</b><br/>${String(reason || "").replaceAll(
+              "\n",
+              "<br/>"
+            )}</p>
              <p style="margin:24px 0">
                <a href="${editLink}"
                   style="background:#ef7807;color:#fff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600;display:inline-block;">
@@ -396,16 +417,21 @@ async function sendFinalDecisionResultMail({ to, llcId, decision, reason, genera
 }
 
 async function getLlcEditorEmail(llcId) {
-  const r = await pool.query(`SELECT editor, generated_llc FROM public.llc WHERE id=$1 AND is_deleted IS NOT TRUE`, [llcId]);
+  const r = await pool.query(
+    `SELECT editor, generated_llc FROM public.llc WHERE id=$1 AND is_deleted IS NOT TRUE`,
+    [llcId]
+  );
   if (!r.rowCount) return { editorEmail: "", generated_llc: "" };
-  return { editorEmail: r.rows[0].editor || "", generated_llc: r.rows[0].generated_llc || "" };
+  return {
+    editorEmail: r.rows[0].editor || "",
+    generated_llc: r.rows[0].generated_llc || "",
+  };
 }
 
 async function getDistributionRecipientsEmails({ plantKeys }) {
   if (!plantKeys?.length) return [];
 
-  // map key => "FRANKFURT Plant"
-  const plants = plantKeys.map(k => `${k} Plant`);
+  const plants = plantKeys.map((k) => `${k} Plant`);
 
   const r = await pool.query(
     `
@@ -417,7 +443,7 @@ async function getDistributionRecipientsEmails({ plantKeys }) {
     [plants]
   );
 
-  return r.rows.map(x => x.email).filter(Boolean);
+  return r.rows.map((x) => x.email).filter(Boolean);
 }
 
 async function sendDistributionMail({
@@ -425,29 +451,27 @@ async function sendDistributionMail({
   llcId,
   productLineLabel,
   creatorPlant,
-  generated_llc,            // ✅ ex: "uploads/generated/LLC_12_xxx.pdf"
+  generated_llc,
 }) {
   if (!toList?.length) {
     console.log("ℹ️ No distribution recipients for LLC", llcId);
     return;
   }
 
-  const FORM_LINK = "https://evidence-deployment.azurewebsites.net/evidenceDeployment";
-
-  // lien vers le PDF (si dispo)
-  const API_BASE_URL = process.env.API_BASE_URL || `https://llc-back.azurewebsites.net`;
-  const fileLink = generated_llc ? `${API_BASE_URL}/${generated_llc}` : "";
-
-  // (Optionnel) nom de fichier propre
+  const FORM_LINK = `${FORM_BASE_URL}/evidenceDeployment`;
+  const fileLink = generated_llc || "";
   const fileLabel = generated_llc ? path.basename(generated_llc) : "N/A";
 
-  // ⚠️ Ton texte exact (avec retour à la ligne + bullet)
   const html = `
     <div style="font-family:Segoe UI, Arial, sans-serif; line-height:1.6; font-size:14px; color:#111827">
       <p>Hello,</p>
       <p>
-        you have a new LLC Card from <b>${String(productLineLabel || "")}</b> , 
-        <b>${String(creatorPlant || "")}</b> PLANT to transversalize in your plant :
+        you have a new LLC Card from <b>${String(
+          productLineLabel || ""
+        )}</b> , 
+        <b>${String(
+          creatorPlant || ""
+        )}</b> PLANT to transversalize in your plant :
         <br/>
         ${
           fileLink
@@ -473,12 +497,10 @@ async function sendDistributionMail({
     </div>
   `;
 
-  // ✅ Optionnel : joindre le PDF en pièce jointe
-  // (Ça marche si le fichier existe physiquement sur ce serveur)
   const attachments = [];
   if (generated_llc) {
-    const abs = path.join(process.cwd(), generated_llc);
-    if (fs.existsSync(abs)) {
+    const abs = absoluteUrlToLocalPath(generated_llc);
+    if (abs && fs.existsSync(abs)) {
       attachments.push({
         filename: path.basename(abs),
         path: abs,
@@ -491,7 +513,7 @@ async function sendDistributionMail({
     to: toList.join(","),
     subject: `LLC #${llcId} – Distribution`,
     html,
-    attachments, // ✅ enlève cette ligne si tu ne veux PAS de pièce jointe
+    attachments,
   });
 
   console.log(`📨 Distribution mail sent for LLC #${llcId} to:`, toList);
@@ -502,7 +524,7 @@ async function sendDistributionInfoToAdminMail({
   llcId,
   productLineLabel,
   creatorPlant,
-  distributedPlants,   
+  distributedPlants,
   generated_llc,
 }) {
   if (!to) {
@@ -510,12 +532,11 @@ async function sendDistributionInfoToAdminMail({
     return;
   }
 
-  const API_BASE_URL = process.env.API_BASE_URL || `https://llc-back.azurewebsites.net`;
-  const fileLink = generated_llc ? `${API_BASE_URL}/${generated_llc}` : "";
+  const fileLink = generated_llc || "";
   const fileLabel = generated_llc ? path.basename(generated_llc) : "N/A";
 
   const plantsHtml = (distributedPlants || [])
-    .map(p => `<li>${String(p)}</li>`)
+    .map((p) => `<li>${String(p)}</li>`)
     .join("");
 
   const html = `
@@ -548,7 +569,9 @@ async function sendDistributionInfoToAdminMail({
   await emailTransporter.sendMail({
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
-    subject: `LLC #${llcId} – Distributed to ${distributedPlants?.length || 0} plant(s)`,
+    subject: `LLC #${llcId} – Distributed to ${
+      distributedPlants?.length || 0
+    } plant(s)`,
     html,
   });
 
@@ -610,8 +633,8 @@ async function getProcessingAttachments(client, processingId) {
 }
 
 function pickFirstProcessingAbs(attachments, scope) {
-  const a = (attachments || []).find(x => x.scope === scope);
-  return a ? path.join(process.cwd(), a.storage_path) : "";
+  const a = (attachments || []).find((x) => x.scope === scope);
+  return a ? absoluteUrlToLocalPath(a.storage_path) : "";
 }
 
 async function generateDeploymentPdfForProcessing({
@@ -628,48 +651,39 @@ async function generateDeploymentPdfForProcessing({
     throw new Error(`Deployment template not found: ${templatePath}`);
   }
 
-    // ✅ distribution_to recalculé comme /api/llc
   const dist = buildDistributionExcludingPlant({
     productLineLabel: llcRow.product_line_label,
     creatorPlant: llcRow.plant,
   });
   const distribution_to = dist.filteredText;
 
-  // ✅ 1) Load processing attachments (before/after dep + evidence files)
   const procAtt = await getProcessingAttachments(client, processingRow.id);
-
-  // ✅ 2) Load LLC attachments (situation_before/after + bad/good)
   const llcAtt = await getLlcAttachments(client, llcRow.id);
-
-  // ✅ 3) Load root causes + their attachments (evidence image)
   const rootCausesDb = await getRootCausesWithAttachments(client, llcRow.id);
 
-  // ---------- helpers ----------
   const pickFirstLlcScopeAbs = (attachments, scope) => {
     const a = (attachments || []).find((x) => x.scope === scope);
     if (!a) return "";
-    return path.join(process.cwd(), a.storage_path); // ✅ ABS for ImageModule
+    return absoluteUrlToLocalPath(a.storage_path);
   };
 
   const isImageFilename = (filename = "") =>
     /\.(png|jpe?g|gif|bmp|webp)$/i.test(filename);
 
   const buildEvidenceFromDb = (rc) => {
-    // take first attachment of this root cause (if any)
     const a = (rc.attachments || [])[0];
     if (!a) return { evidence_image: "", evidence_link: "", evidence_name: "" };
 
-    const abs = path.join(process.cwd(), a.storage_path);
+    const abs = absoluteUrlToLocalPath(a.storage_path);
     const img = isImageFilename(a.filename);
 
     return {
-      evidence_image: img ? abs : "",     // ✅ for docxtemplater image module
+      evidence_image: img ? abs : "",
       evidence_link: img ? "" : a.storage_path,
       evidence_name: a.filename,
     };
   };
 
-  // ✅ Build rootCauses array exactly like template expects
   const rootCauses = (rootCausesDb || []).map((rc, i) => ({
     index: i + 1,
     root_cause: rc.root_cause,
@@ -682,9 +696,6 @@ async function generateDeploymentPdfForProcessing({
   }));
 
   const docData = {
-    // =========================
-    // champs LLC (source vérité)
-    // =========================
     id: llcRow.id,
     problem_short: llcRow.problem_short,
     created_at: formatDateDMY(llcRow.created_at),
@@ -704,22 +715,15 @@ async function generateDeploymentPdfForProcessing({
     product_type: llcRow.product_type,
     problem_detail: llcRow.problem_detail,
     conclusions: llcRow.conclusions,
-    distribution_to: distribution_to,
+    distribution_to,
 
-    // =========================
-    // ✅ images LLC attendues par template
-    // =========================
     situation_before: pickFirstLlcScopeAbs(llcAtt, "SITUATION_BEFORE"),
     situation_after: pickFirstLlcScopeAbs(llcAtt, "SITUATION_AFTER"),
     bad_part: pickFirstLlcScopeAbs(llcAtt, "BAD_PART"),
     good_part: pickFirstLlcScopeAbs(llcAtt, "GOOD_PART"),
 
-    // =========================
-    // ✅ root causes table attendue par template
-    // =========================
     rootCauses,
 
-    // (optionnel si tu as un placeholder texte dans le template)
     rootCauses_text: rootCauses
       .map(
         (rc, i) =>
@@ -727,9 +731,6 @@ async function generateDeploymentPdfForProcessing({
       )
       .join("\n\n"),
 
-    // =========================
-    // ✅ champs processing
-    // =========================
     person: processingRow.person,
     evidence_plant: processingRow.evidence_plant,
     deployment_description: processingRow.deployment_description,
@@ -739,45 +740,54 @@ async function generateDeploymentPdfForProcessing({
       ? formatDateDMY(processingRow.deployment_date)
       : formatDateDMY(),
 
-    // ✅ images processing
     before_dep: pickFirstProcessingAbs(procAtt, "BEFORE_DEP"),
     after_dep: pickFirstProcessingAbs(procAtt, "AFTER_DEP"),
   };
 
-  // 1) DOCX buffer
   const buffer = generateDocxBuffer(templatePath, docData);
 
-  // 2) write docx
-  const baseName = `DEP_${llcRow.id}_${safeName(processingRow.evidence_plant)}_${Date.now()}`;
+  const baseName = `DEP_${llcRow.id}_${safeName(
+    processingRow.evidence_plant
+  )}_${Date.now()}`;
   const docxAbs = path.join(generatedDirAbs, `${baseName}.docx`);
   fs.writeFileSync(docxAbs, buffer);
 
-  // 3) convert to PDF
   const pdfAbs = await convertDocxToPdf({
     inputDocxAbsPath: docxAbs,
     outputDirAbs: generatedDirAbs,
     sofficePath: process.env.SOFFICE_PATH,
   });
 
-  try { fs.unlinkSync(docxAbs); } catch {}
+  try {
+    fs.unlinkSync(docxAbs);
+  } catch {}
 
-  return relPath(pdfAbs);
+  return toAbsoluteFileUrl(relPath(pdfAbs));
 }
 
 function generateDepToken() {
   return crypto.randomBytes(32).toString("hex");
 }
 
-async function sendDepReviewMail({ to, llcId, processingId, token, evidencePlant }) {
-  const FRONTEND_URL = process.env.FRONTEND_BASE_URL || "https://avocarbon-llc.azurewebsites.net";
-  const reviewLink = `${FRONTEND_URL}/dep-review/${processingId}?token=${encodeURIComponent(token)}`;
+async function sendDepReviewMail({
+  to,
+  llcId,
+  processingId,
+  token,
+  evidencePlant,
+}) {
+  const reviewLink = `${FRONTEND_BASE_URL}/dep-review/${processingId}?token=${encodeURIComponent(
+    token
+  )}`;
 
   const html = `
     <div style="font-family:Segoe UI, Arial, sans-serif; line-height:1.6">
       <h2>DEP LLC #${llcId} – Approval required</h2>
 
       <p>
-        Evidence need your approval from plant: <b>${String(evidencePlant || "N/A")}</b>
+        Evidence need your approval from plant: <b>${String(
+          evidencePlant || "N/A"
+        )}</b>
       </p>
 
       <p style="margin:24px 0">
@@ -800,7 +810,9 @@ async function sendDepReviewMail({ to, llcId, processingId, token, evidencePlant
     html,
   });
 
-  console.log(`📨 DEP approval email sent to ${to} for processing #${processingId}`);
+  console.log(
+    `📨 DEP approval email sent to ${to} for processing #${processingId}`
+  );
 }
 
 function generateDepReworkToken() {
@@ -808,27 +820,42 @@ function generateDepReworkToken() {
 }
 
 async function getProcessingPersonEmail(processingId) {
-  const r = await pool.query(`SELECT person FROM public.llc_deployment_processing WHERE id=$1`, [processingId]);
+  const r = await pool.query(
+    `SELECT person FROM public.llc_deployment_processing WHERE id=$1`,
+    [processingId]
+  );
   return r.rowCount ? (r.rows[0].person || "") : "";
 }
 
-async function sendDepReworkMailToEditor({ to, llcId, processingId, token, reason, evidencePlant }) {
-  const FRONT_FORM_URL = process.env.FRONTEND_DEP_FORM_URL || "https://evidence-deployment.azurewebsites.net";
-
-  const link = `${FRONT_FORM_URL}?processingId=${encodeURIComponent(processingId)}&token=${encodeURIComponent(token)}`;
+async function sendDepReworkMailToEditor({
+  to,
+  llcId,
+  processingId,
+  token,
+  reason,
+  evidencePlant,
+}) {
+  const link = `${FORM_BASE_URL}?processingId=${encodeURIComponent(
+    processingId
+  )}&token=${encodeURIComponent(token)}`;
 
   const html = `
     <div style="font-family:Segoe UI, Arial, sans-serif; line-height:1.6">
       <h2>DEP LLC #${llcId} – Rework required</h2>
 
       <p>
-        The Evidence Deployment from <b>${String(evidencePlant || "N/A")}</b> has been
+        The Evidence Deployment from <b>${String(
+          evidencePlant || "N/A"
+        )}</b> has been
         <b style="color:#b91c1c">REJECTED</b>.
       </p>
 
       ${
         reason
-          ? `<p><b>Reason:</b><br/>${String(reason).replaceAll("\n", "<br/>")}</p>`
+          ? `<p><b>Reason:</b><br/>${String(reason).replaceAll(
+              "\n",
+              "<br/>"
+            )}</p>`
           : ""
       }
 
@@ -856,10 +883,7 @@ async function sendDepReworkMailToEditor({ to, llcId, processingId, token, reaso
 }
 
 function publicFileUrl(storage_path) {
-  // storage_path ressemble à "uploads/xxx..."
-  const API_BASE_URL = process.env.API_BASE_URL || `https://llc-back.azurewebsites.net`;
-  if (!storage_path) return "";
-  return `${API_BASE_URL}/${storage_path.replace(/^\/+/, "")}`;
+  return storage_path || "";
 }
 
 // =========================
@@ -926,11 +950,10 @@ function distributionToForProductLine(label) {
 function splitDistributionKeys(distributionStr) {
   return String(distributionStr || "")
     .split("-")
-    .map(s => s.trim().toUpperCase())
+    .map((s) => s.trim().toUpperCase())
     .filter(Boolean);
 }
 
-// exemple: "FRANKFURT Plant" -> "FRANKFURT"
 function plantNameToKey(plantName) {
   return String(plantName || "")
     .replace(/\s*plant\s*$/i, "")
@@ -939,11 +962,11 @@ function plantNameToKey(plantName) {
 }
 
 function buildDistributionExcludingPlant({ productLineLabel, creatorPlant }) {
-  const raw = distributionToForProductLine(productLineLabel); // ex: "FRANKFURT - POITIERS - ..."
+  const raw = distributionToForProductLine(productLineLabel);
   const keys = splitDistributionKeys(raw);
 
   const creatorKey = plantNameToKey(creatorPlant);
-  const filtered = keys.filter(k => k !== creatorKey);
+  const filtered = keys.filter((k) => k !== creatorKey);
 
   return {
     raw,
@@ -960,12 +983,12 @@ function getDistributionPlantsForLlcRow(llcRow) {
     creatorPlant: llcRow.plant,
   });
 
-  // dist.filteredKeys = ["FRANKFURT", "POITIERS", ...]
   return dist.filteredKeys.map((k) => `${k} Plant`);
 }
 
 // ================== JWT helpers ==================
-const ACCESS_TOKEN_TTL = process.env.JWT_ACCESS_EXPIRES_IN || process.env.JWT_EXPIRES_IN || "15m";
+const ACCESS_TOKEN_TTL =
+  process.env.JWT_ACCESS_EXPIRES_IN || process.env.JWT_EXPIRES_IN || "15m";
 const REFRESH_TOKEN_TTL_DAYS = Number(process.env.REFRESH_TOKEN_TTL_DAYS || 7);
 
 function signAccessToken(payload) {
@@ -1019,7 +1042,7 @@ function requireAuth(req, res, next) {
 
     const token = m[1];
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded; // { id, email }
+    req.user = decoded;
     next();
   } catch {
     return res.status(401).json({ error: "Invalid or expired token" });
@@ -1031,18 +1054,54 @@ const uploadPath = path.join(process.cwd(), UPLOAD_DIR);
 fs.mkdirSync(uploadPath, { recursive: true });
 app.use(`/${UPLOAD_DIR}`, express.static(uploadPath));
 
-// ✅ generated docx directory
 const generatedDirAbs = path.join(uploadPath, "generated");
 fs.mkdirSync(generatedDirAbs, { recursive: true });
 
-// ✅ template path
-const TEMPLATE_PATH = path.join(process.cwd(), "templates", "QUALITY_TEMPLATE.docx");
-const TEMPLATE_DEP_PATH = path.join(process.cwd(), "templates", "QUALITY_TEMPLATE_DEP.docx");
-const TEMPLATE_DEP_NC_PATH = path.join(process.cwd(), "templates", "QUALITY_TEMPLATE_DEP_NC.docx");
+const TEMPLATE_PATH = path.join(
+  process.cwd(),
+  "templates",
+  "QUALITY_TEMPLATE.docx"
+);
+const TEMPLATE_DEP_PATH = path.join(
+  process.cwd(),
+  "templates",
+  "QUALITY_TEMPLATE_DEP.docx"
+);
+const TEMPLATE_DEP_NC_PATH = path.join(
+  process.cwd(),
+  "templates",
+  "QUALITY_TEMPLATE_DEP_NC.docx"
+);
 
 // ================== HELPERS ==================
 function relPath(absPath) {
   return path.relative(process.cwd(), absPath).replaceAll("\\", "/");
+}
+
+function toAbsoluteFileUrl(filePath) {
+  if (!filePath) return "";
+  const normalized = String(filePath)
+    .replaceAll("\\", "/")
+    .replace(/^\/+/, "");
+  return `${API_BASE_URL}/${normalized}`;
+}
+
+function absoluteUrlToLocalPath(fileUrl) {
+  if (!fileUrl) return "";
+
+  const normalizedBase = `${API_BASE_URL}/`;
+  const normalizedUrl = String(fileUrl).replaceAll("\\", "/");
+
+  if (normalizedUrl.startsWith(normalizedBase)) {
+    const relativePart = normalizedUrl.slice(normalizedBase.length);
+    return path.join(process.cwd(), relativePart);
+  }
+
+  if (/^https?:\/\//i.test(normalizedUrl)) {
+    return "";
+  }
+
+  return path.join(process.cwd(), normalizedUrl.replace(/^\/+/, ""));
 }
 
 function safeName(s) {
@@ -1053,13 +1112,11 @@ function generateDocxBuffer(templatePath, data) {
   const content = fs.readFileSync(templatePath, "binary");
   const zip = new PizZip(content);
 
-  // ✅ module images
   const imageModule = new ImageModule({
     centered: false,
 
-    // tagValue doit être un chemin local ABS (multer file.path) ou un Buffer
     getImage: (tagValue) => {
-      if (!tagValue) return null; // ⚠️ si null -> tag doit être conditionnel dans le template
+      if (!tagValue) return null;
       if (Buffer.isBuffer(tagValue)) return tagValue;
       return fs.readFileSync(tagValue);
     },
@@ -1068,9 +1125,7 @@ function generateDocxBuffer(templatePath, data) {
       if (!imgBuffer) return [1, 1];
 
       const dim = imageSize(imgBuffer);
-
-      // ✅ taille max (à ajuster)
-      const maxWidth = 300; // px
+      const maxWidth = 300;
       const ratio = dim.width ? Math.min(1, maxWidth / dim.width) : 1;
 
       const w = Math.round(dim.width * ratio);
@@ -1081,10 +1136,9 @@ function generateDocxBuffer(templatePath, data) {
 
   try {
     const doc = new Docxtemplater(zip, {
-      modules: [imageModule], // ✅ HERE
+      modules: [imageModule],
       paragraphLoop: true,
       linebreaks: true,
-
       delimiters: { start: "{{", end: "}}" },
       nullGetter: () => "",
     });
@@ -1102,9 +1156,12 @@ function generateDocxBuffer(templatePath, data) {
         console.error(
           `#${i + 1}`,
           one.properties?.explanation || one.message,
-          "\n  tag:", one.properties?.xtag,
-          "\n  context:", one.properties?.context,
-          "\n  file:", one.properties?.file
+          "\n  tag:",
+          one.properties?.xtag,
+          "\n  context:",
+          one.properties?.context,
+          "\n  file:",
+          one.properties?.file
         );
       });
       console.error("-------------------------------------");
@@ -1189,29 +1246,30 @@ const RefreshTokenSchema = z.object({
   refresh_token: z.string().min(1),
 });
 
-const EvidenceDeploymentSchema = z.object({
-  llc_id: z.number(),
-  deployment_applicability: z.string().min(1, "Required"), 
-  why_not_apply: z.string().max(2000).optional(),
-  evidence_plant: z.string().min(1, "Required"),
-  person: z.string().min(1, "Required").max(200),
-  deployment_description: z.string().min(1, "Required").max(2000),
-  pm: z.string().min(1, "Required"),
-  // ✅ pour edit mode
-  processingId: z.number().optional(),
-  token: z.string().optional(),
-  deleteAttachmentIds: z.array(z.number()).optional(),
-}).superRefine((data, ctx) => {
-  if (data.deployment_applicability === "Not concerned") {
-    if (!data.why_not_apply || data.why_not_apply.trim().length === 0) {
-      ctx.addIssue({
-        path: ["why_not_apply"],
-        message: "Required when plant is not concerned",
-        code: z.ZodIssueCode.custom,
-      });
+const EvidenceDeploymentSchema = z
+  .object({
+    llc_id: z.number(),
+    deployment_applicability: z.string().min(1, "Required"),
+    why_not_apply: z.string().max(2000).optional(),
+    evidence_plant: z.string().min(1, "Required"),
+    person: z.string().min(1, "Required").max(200),
+    deployment_description: z.string().min(1, "Required").max(2000),
+    pm: z.string().min(1, "Required"),
+    processingId: z.number().optional(),
+    token: z.string().optional(),
+    deleteAttachmentIds: z.array(z.number()).optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.deployment_applicability === "Not concerned") {
+      if (!data.why_not_apply || data.why_not_apply.trim().length === 0) {
+        ctx.addIssue({
+          path: ["why_not_apply"],
+          message: "Required when plant is not concerned",
+          code: z.ZodIssueCode.custom,
+        });
+      }
     }
-  }
-});
+  });
 
 // ================== ROUTES ==================
 app.get("/api/health", (_, res) => res.json({ ok: true }));
@@ -1221,8 +1279,13 @@ app.post("/api/auth/signup", async (req, res) => {
   try {
     const { name, email, password, plant, role } = SignUpSchema.parse(req.body);
 
-    const exists = await pool.query("SELECT id FROM public.users WHERE email=$1", [email]);
-    if (exists.rows.length) return res.status(409).json({ error: "Email already used" });
+    const exists = await pool.query(
+      "SELECT id FROM public.users WHERE email=$1",
+      [email]
+    );
+    if (exists.rows.length) {
+      return res.status(409).json({ error: "Email already used" });
+    }
 
     const password_hash = await bcrypt.hash(password, 10);
 
@@ -1234,10 +1297,20 @@ app.post("/api/auth/signup", async (req, res) => {
     );
 
     const user = r.rows[0];
-    const accessToken = signAccessToken({ id: user.id, email: user.email, plant: user.plant, role: user.role });
+    const accessToken = signAccessToken({
+      id: user.id,
+      email: user.email,
+      plant: user.plant,
+      role: user.role,
+    });
     const refreshToken = await createAndStoreRefreshToken(user.id);
 
-    res.json({ token: accessToken, access_token: accessToken, refresh_token: refreshToken, user });
+    res.json({
+      token: accessToken,
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      user,
+    });
   } catch (e) {
     res.status(400).json({ error: e.message || "Signup failed" });
   }
@@ -1267,10 +1340,27 @@ app.post("/api/auth/signin", async (req, res) => {
     for (const u of r.rows) {
       const ok = await bcrypt.compare(password, u.password_hash);
       if (ok) {
-        const user = { id: u.id, name: u.name, email: u.email, plant: u.plant, role: u.role };
-        const accessToken = signAccessToken({ id: u.id, email: u.email, plant: u.plant, role: u.role });
+        const user = {
+          id: u.id,
+          name: u.name,
+          email: u.email,
+          plant: u.plant,
+          role: u.role,
+        };
+        const accessToken = signAccessToken({
+          id: u.id,
+          email: u.email,
+          plant: u.plant,
+          role: u.role,
+        });
         const refreshToken = await createAndStoreRefreshToken(u.id);
-        return res.json({ token: accessToken, access_token: accessToken, refresh_token: refreshToken, user });
+
+        return res.json({
+          token: accessToken,
+          access_token: accessToken,
+          refresh_token: refreshToken,
+          user,
+        });
       }
     }
 
@@ -1394,7 +1484,9 @@ app.post("/api/auth/forgot-password", async (req, res) => {
 
     const token = crypto.randomBytes(32).toString("hex");
     const tokenHash = hashResetToken(token);
-    const expiresAt = new Date(Date.now() + RESET_TOKEN_TTL_HOURS * 60 * 60 * 1000);
+    const expiresAt = new Date(
+      Date.now() + RESET_TOKEN_TTL_HOURS * 60 * 60 * 1000
+    );
 
     await pool.query(
       `INSERT INTO public.password_reset_tokens (email, token_hash, expires_at)
@@ -1413,7 +1505,8 @@ app.post("/api/auth/forgot-password", async (req, res) => {
 
 app.post("/api/auth/reset-password", async (req, res) => {
   try {
-    const { token, password, confirm_password, email } = ResetPasswordSchema.parse(req.body);
+    const { token, password, confirm_password, email } =
+      ResetPasswordSchema.parse(req.body);
 
     if (password !== confirm_password) {
       return res.status(400).json({ error: "Passwords do not match" });
@@ -1469,7 +1562,9 @@ app.post("/api/llc", requireAuth, upload.any(), async (req, res) => {
   let generatedAbsPath = "";
 
   if (req.user.role !== "quality_manager") {
-    return res.status(403).json({ error: "Only Quality Managers can create/edit LLC" });
+    return res
+      .status(403)
+      .json({ error: "Only Quality Managers can create/edit LLC" });
   }
 
   try {
@@ -1478,15 +1573,16 @@ app.post("/api/llc", requireAuth, upload.any(), async (req, res) => {
     const forcedValidator = validatorForPlantExact(forcedPlant);
     const dist = buildDistributionExcludingPlant({
       productLineLabel: llc.product_line_label,
-      creatorPlant: forcedPlant, // le plant qui a créé
+      creatorPlant: forcedPlant,
     });
 
-    const distribution_to = dist.filteredText; // ✅ texte sans le créateur
-    const rootCauses = z.array(RootCauseSchema).min(1).parse(JSON.parse(req.body.rootCauses || "[]"));
+    const rootCauses = z
+      .array(RootCauseSchema)
+      .min(1)
+      .parse(JSON.parse(req.body.rootCauses || "[]"));
 
     await client.query("BEGIN");
 
-    // 1) Insert LLC
     const llcInsert = await client.query(
       `INSERT INTO public.llc (
         category, problem_short, problem_detail, llc_type, customer,
@@ -1519,7 +1615,6 @@ app.post("/api/llc", requireAuth, upload.any(), async (req, res) => {
 
     const llcId = llcInsert.rows[0].id;
 
-    // 2) Insert Root Causes
     const rootCauseIds = [];
     for (let i = 0; i < rootCauses.length; i++) {
       const rc = rootCauses[i];
@@ -1543,7 +1638,6 @@ app.post("/api/llc", requireAuth, upload.any(), async (req, res) => {
       rootCauseIds.push(rcInsert.rows[0].id);
     }
 
-    // 3) Insert attachments
     const files = req.files || [];
 
     const scopeMap = {
@@ -1554,7 +1648,7 @@ app.post("/api/llc", requireAuth, upload.any(), async (req, res) => {
     };
 
     for (const f of files) {
-      const p = relPath(f.path);
+      const p = toAbsoluteFileUrl(relPath(f.path));
 
       const m = /^rootCauseFiles_(\d+)$/.exec(f.fieldname);
       if (m) {
@@ -1582,14 +1676,13 @@ app.post("/api/llc", requireAuth, upload.any(), async (req, res) => {
       }
     }
 
-    // 4) ✅ Generate DOCX from template & store path in generated_llc
     if (!fs.existsSync(TEMPLATE_PATH)) {
       throw new Error(`Template not found: ${TEMPLATE_PATH}`);
     }
 
     const findFirstImagePath = (fieldname) => {
       const f = files.find((x) => x.fieldname === fieldname);
-      return f ? f.path : ""; // ✅ chemin ABS
+      return f ? f.path : "";
     };
 
     const isImage = (filename = "") =>
@@ -1601,8 +1694,8 @@ app.post("/api/llc", requireAuth, upload.any(), async (req, res) => {
 
       const img = isImage(f.originalname);
       return {
-        evidence_image: img ? f.path : "",                 // ✅ pour image module
-        evidence_link: img ? "" : `${UPLOAD_DIR}/${path.basename(f.path)}`, // ✅ lien web
+        evidence_image: img ? f.path : "",
+        evidence_link: img ? "" : toAbsoluteFileUrl(relPath(f.path)),
         evidence_name: f.originalname,
       };
     };
@@ -1618,14 +1711,12 @@ app.post("/api/llc", requireAuth, upload.any(), async (req, res) => {
       bad_part: findFirstImagePath("badPartFiles"),
       good_part: findFirstImagePath("goodPartFiles"),
 
-      // utile si ton template a une boucle rootCauses
       rootCauses: rootCauses.map((rc, i) => ({
         index: i + 1,
         ...rc,
         ...buildEvidence(i),
       })),
 
-      // utile si ton template n'a pas de boucle
       rootCauses_text: rootCauses
         .map(
           (rc, i) =>
@@ -1636,24 +1727,22 @@ app.post("/api/llc", requireAuth, upload.any(), async (req, res) => {
 
     const buffer = generateDocxBuffer(TEMPLATE_PATH, docData);
 
-    // 1) écrire un DOCX temporaire
     const baseName = `LLC_${llcId}_${Date.now()}_${safeName(llc.customer)}`;
     const docxAbs = path.join(generatedDirAbs, `${baseName}.docx`);
     fs.writeFileSync(docxAbs, buffer);
 
-    // 2) convertir en PDF
     const pdfAbs = await convertDocxToPdf({
       inputDocxAbsPath: docxAbs,
       outputDirAbs: generatedDirAbs,
       sofficePath: process.env.SOFFICE_PATH,
     });
 
-    // 3) (optionnel) supprimer le DOCX si tu ne veux PAS le garder
-    try { fs.unlinkSync(docxAbs); } catch {}
+    try {
+      fs.unlinkSync(docxAbs);
+    } catch {}
 
-    // 4) sauver le PDF comme "generated_llc"
     generatedAbsPath = pdfAbs;
-    const generatedRel = relPath(pdfAbs);
+    const generatedRel = toAbsoluteFileUrl(relPath(pdfAbs));
 
     await client.query(
       `UPDATE public.llc
@@ -1662,10 +1751,6 @@ app.post("/api/llc", requireAuth, upload.any(), async (req, res) => {
       [generatedRel, llcId]
     );
 
-
-    // ===============================
-    // PM REVIEW TOKEN (en DB) ✅
-    // ===============================
     const pmToken = generatePmToken();
 
     await client.query(
@@ -1691,7 +1776,6 @@ app.post("/api/llc", requireAuth, upload.any(), async (req, res) => {
       generated_llc: generatedRel,
     });
 
-    // ✅ Envoi mail APRES réponse/commit (non bloquant)
     sendPmReviewMail({
       to: forcedValidator,
       llcId,
@@ -1699,13 +1783,13 @@ app.post("/api/llc", requireAuth, upload.any(), async (req, res) => {
     }).catch((err) => {
       console.error("❌ PM review email failed:", err?.message || err);
     });
-
   } catch (e) {
     await client.query("ROLLBACK");
 
-    // cleanup docx if created
     try {
-      if (generatedAbsPath && fs.existsSync(generatedAbsPath)) fs.unlinkSync(generatedAbsPath);
+      if (generatedAbsPath && fs.existsSync(generatedAbsPath)) {
+        fs.unlinkSync(generatedAbsPath);
+      }
     } catch {}
 
     res.status(400).json({ error: e.message || "Save failed" });
@@ -1757,7 +1841,6 @@ app.post("/api/llc/:id/pm-review/decision", async (req, res) => {
   }
 
   if (action === "approve") {
-    // 1) Update PM decision + status
     const r = await pool.query(
       `
       UPDATE public.llc
@@ -1771,9 +1854,10 @@ app.post("/api/llc/:id/pm-review/decision", async (req, res) => {
       [llcId, token]
     );
 
-    if (!r.rowCount) return res.status(404).json({ error: "Invalid or expired link" });
+    if (!r.rowCount) {
+      return res.status(404).json({ error: "Invalid or expired link" });
+    }
 
-    // 2) Create FINAL token and store in DB
     const finalToken = generateFinalToken();
 
     await pool.query(
@@ -1789,7 +1873,6 @@ app.post("/api/llc/:id/pm-review/decision", async (req, res) => {
       [finalToken, llcId]
     );
 
-    // 3) Respond
     res.json({ ok: true });
 
     const { editorEmail } = await getLlcEditorEmail(llcId);
@@ -1799,7 +1882,6 @@ app.post("/api/llc/:id/pm-review/decision", async (req, res) => {
       decision: "APPROVED",
     }).catch(console.error);
 
-    // 4) Send final mail (non bloquant)
     const adminEmail = await getAdminEmail();
     if (!adminEmail) {
       console.error("❌ No admin found (role=admin). Final review mail not sent.");
@@ -1836,14 +1918,15 @@ app.post("/api/llc/:id/pm-review/decision", async (req, res) => {
     decision: "REJECTED",
     reason: reason || "",
   }).catch(console.error);
-
 });
 
 app.get("/api/llc/:id/final-review", async (req, res) => {
   const llcId = Number(req.params.id);
   const token = String(req.query.token || "");
 
-  if (!llcId || !token) return res.status(400).json({ error: "Missing id or token" });
+  if (!llcId || !token) {
+    return res.status(400).json({ error: "Missing id or token" });
+  }
 
   const r = await pool.query(
     `
@@ -1857,30 +1940,34 @@ app.get("/api/llc/:id/final-review", async (req, res) => {
     [llcId, token]
   );
 
-  if (!r.rows.length) return res.status(404).json({ error: "Invalid or expired link" });
+  if (!r.rows.length) {
+    return res.status(404).json({ error: "Invalid or expired link" });
+  }
 
   res.json(r.rows[0]);
 });
 
 app.post("/api/llc/:id/final-review/decision", async (req, res) => {
   const llcId = Number(req.params.id);
-  const { token, action, reason } = req.body; // "approve" | "reject" + reason
+  const { token, action, reason } = req.body;
 
   if (!llcId || !token || !["approve", "reject"].includes(action)) {
     return res.status(400).json({ error: "Invalid payload" });
   }
 
-  // ✅ required reason when rejecting
   if (action === "reject") {
-    const r = String(reason || "").trim();
-    if (r.length < 3) {
+    const rj = String(reason || "").trim();
+    if (rj.length < 3) {
       return res.status(400).json({ error: "Reject reason is required" });
     }
   }
 
   const finalDecision = action === "approve" ? "APPROVED" : "REJECTED";
-  const nextStatus = action === "approve" ? "DEPLOYMENT_IN_PROGRESS" : "IN_PREPARATION";
-  const finalRejectReason = action === "reject" ? String(reason || "").trim() : null;
+  const nextStatus =
+    action === "approve" ? "DEPLOYMENT_IN_PROGRESS" : "IN_PREPARATION";
+  const finalRejectReason =
+    action === "reject" ? String(reason || "").trim() : null;
+
   const r = await pool.query(
     `
     UPDATE public.llc
@@ -1897,16 +1984,18 @@ app.post("/api/llc/:id/final-review/decision", async (req, res) => {
     [llcId, token, finalDecision, finalRejectReason, nextStatus]
   );
 
+  if (!r.rowCount) {
+    return res.status(404).json({ error: "Invalid or expired link" });
+  }
+
   const { editorEmail, generated_llc } = await getLlcEditorEmail(llcId);
   sendFinalDecisionResultMail({
     to: editorEmail,
     llcId,
-    decision: finalDecision,                 // "APPROVED" ou "REJECTED"
+    decision: finalDecision,
     reason: finalRejectReason || "",
     generated_llc,
   }).catch(console.error);
-
-  if (!r.rowCount) return res.status(404).json({ error: "Invalid or expired link" });
 
   res.json(r.rows[0]);
 
@@ -1918,19 +2007,21 @@ app.post("/api/llc/:id/final-review/decision", async (req, res) => {
       creatorPlant: llcRow.plant,
     });
 
-    const distributedPlants = (dist.filteredKeys || []).map(k => `${k} Plant`);
-    const toList = await getDistributionRecipientsEmails({ plantKeys: dist.filteredKeys });
+    const distributedPlants = (dist.filteredKeys || []).map((k) => `${k} Plant`);
+    const toList = await getDistributionRecipientsEmails({
+      plantKeys: dist.filteredKeys,
+    });
 
-    // 1) mail aux plants (QM + PM)
     sendDistributionMail({
       toList,
       llcId,
       productLineLabel: llcRow.product_line_label,
       creatorPlant: llcRow.plant,
       generated_llc: llcRow.generated_llc,
-    }).catch((err) => console.error("❌ Distribution mail failed:", err?.message || err));
+    }).catch((err) => {
+      console.error("❌ Distribution mail failed:", err?.message || err);
+    });
 
-    // 2) mail informatif à l'admin (liste des plants)
     const adminEmail = await getAdminEmail();
     sendDistributionInfoToAdminMail({
       to: adminEmail,
@@ -1939,11 +2030,14 @@ app.post("/api/llc/:id/final-review/decision", async (req, res) => {
       creatorPlant: llcRow.plant,
       distributedPlants,
       generated_llc: llcRow.generated_llc,
-    }).catch((err) => console.error("❌ Admin distribution info mail failed:", err?.message || err));
+    }).catch((err) => {
+      console.error(
+        "❌ Admin distribution info mail failed:",
+        err?.message || err
+      );
+    });
   }
 });
-
-
 
 app.get("/api/dep-processing/:processingId/review", async (req, res) => {
   const processingId = Number(req.params.processingId);
@@ -1972,7 +2066,9 @@ app.get("/api/dep-processing/:processingId/review", async (req, res) => {
     [processingId, token]
   );
 
-  if (!r.rowCount) return res.status(404).json({ error: "Invalid or expired link" });
+  if (!r.rowCount) {
+    return res.status(404).json({ error: "Invalid or expired link" });
+  }
 
   res.json(r.rows[0]);
 });
@@ -1989,8 +2085,10 @@ app.post("/api/dep-processing/:processingId/review/decision", async (req, res) =
     }
 
     if (action === "reject") {
-      const r = String(reason || "").trim();
-      if (r.length < 3) return res.status(400).json({ error: "Reject reason is required" });
+      const rj = String(reason || "").trim();
+      if (rj.length < 3) {
+        return res.status(400).json({ error: "Reject reason is required" });
+      }
     }
 
     const decision = action === "approve" ? "APPROVED" : "REJECTED";
@@ -1998,7 +2096,6 @@ app.post("/api/dep-processing/:processingId/review/decision", async (req, res) =
 
     await client.query("BEGIN");
 
-    // 1) update processing decision (admin)
     const upd = await client.query(
       `
       UPDATE public.llc_deployment_processing
@@ -2020,22 +2117,19 @@ app.post("/api/dep-processing/:processingId/review/decision", async (req, res) =
 
     const processingRow = upd.rows[0];
 
-    // 2) reload llc (source de vérité) to compute targets
     const llcRes = await client.query(
-      `SELECT id, status, plant, product_line_label FROM public.llc WHERE id=$1 AND is_deleted IS NOT TRUE` ,
+      `SELECT id, status, plant, product_line_label FROM public.llc WHERE id=$1 AND is_deleted IS NOT TRUE`,
       [processingRow.llc_id]
     );
     if (!llcRes.rowCount) throw new Error("LLC not found");
     const llcRow = llcRes.rows[0];
 
-    // 3) compute target plants
     const dist = buildDistributionExcludingPlant({
       productLineLabel: llcRow.product_line_label,
       creatorPlant: llcRow.plant,
     });
     const targetPlants = (dist.filteredKeys || []).map((k) => `${k} Plant`);
 
-    // 4) read all decisions for those target plants
     const decRes = await client.query(
       `
       SELECT evidence_plant, dep_decision
@@ -2051,10 +2145,11 @@ app.post("/api/dep-processing/:processingId/review/decision", async (req, res) =
     const allApproved =
       targetPlants.length > 0 &&
       targetPlants.every((plant) =>
-        decisions.some((x) => x.evidence_plant === plant && x.dep_decision === "APPROVED")
+        decisions.some(
+          (x) => x.evidence_plant === plant && x.dep_decision === "APPROVED"
+        )
       );
 
-    // 5) update LLC status
     if (anyRejected) {
       await client.query(
         `UPDATE public.llc SET status='DEPLOYMENT_REJECTED' WHERE id=$1 AND is_deleted IS NOT TRUE`,
@@ -2065,19 +2160,13 @@ app.post("/api/dep-processing/:processingId/review/decision", async (req, res) =
         `UPDATE public.llc SET status='DEPLOYMENT_VALIDATED' WHERE id=$1 AND is_deleted IS NOT TRUE`,
         [processingRow.llc_id]
       );
-    } else {
-      // on peut laisser DEPLOYMENT_PROCESSING
-      // (optionnel) enforce it:
-      // await client.query(`UPDATE public.llc SET status='DEPLOYMENT_PROCESSING' WHERE id=$1`, [processingRow.llc_id]);
     }
 
     let reworkMailAfterCommit = null;
 
     if (decision === "REJECTED") {
-      // 1) générer token rework
       const reworkToken = generateDepReworkToken();
 
-      // 2) stocker token
       await client.query(
         `
         UPDATE public.llc_deployment_processing
@@ -2088,10 +2177,8 @@ app.post("/api/dep-processing/:processingId/review/decision", async (req, res) =
         [reworkToken, processingId]
       );
 
-      // 3) récupérer email person 
       const personEmail = await getProcessingPersonEmail(processingRow.id);
 
-      // 4) préparer mail après commit (comme tu fais ailleurs)
       reworkMailAfterCommit = async () => {
         if (!personEmail) {
           console.error("❌ No person email found. Rework mail not sent.");
@@ -2113,15 +2200,22 @@ app.post("/api/dep-processing/:processingId/review/decision", async (req, res) =
     res.json({
       ok: true,
       processing: processingRow,
-      llcStatus:
-        anyRejected ? "DEPLOYMENT_REJECTED" : allApproved ? "DEPLOYMENT_VALIDATED" : llcRow.status,
+      llcStatus: anyRejected
+        ? "DEPLOYMENT_REJECTED"
+        : allApproved
+        ? "DEPLOYMENT_VALIDATED"
+        : llcRow.status,
     });
+
     Promise.resolve()
       .then(() => reworkMailAfterCommit?.())
-      .catch((err) => console.error("❌ DEP rework email failed:", err?.message || err));
-
+      .catch((err) => {
+        console.error("❌ DEP rework email failed:", err?.message || err);
+      });
   } catch (e) {
-    try { await client.query("ROLLBACK"); } catch {}
+    try {
+      await client.query("ROLLBACK");
+    } catch {}
     res.status(400).json({ error: e?.message || "Decision failed" });
   } finally {
     client.release();
@@ -2154,11 +2248,12 @@ app.get("/api/dep-processing/:processingId/rework", async (req, res) => {
     [processingId, token]
   );
 
-  if (!r.rowCount) return res.status(404).json({ error: "Invalid or expired link" });
+  if (!r.rowCount) {
+    return res.status(404).json({ error: "Invalid or expired link" });
+  }
 
   const row = r.rows[0];
 
-  // ✅ charger les fichiers déjà stockés
   const att = await pool.query(
     `
     SELECT id, scope, filename, storage_path
@@ -2169,9 +2264,9 @@ app.get("/api/dep-processing/:processingId/rework", async (req, res) => {
     [processingId]
   );
 
-  const attachments = (att.rows || []).map(a => ({
+  const attachments = (att.rows || []).map((a) => ({
     id: a.id,
-    scope: a.scope,             
+    scope: a.scope,
     filename: a.filename,
     storage_path: a.storage_path,
     url: publicFileUrl(a.storage_path),
@@ -2187,11 +2282,9 @@ app.get("/api/dep-processing/:processingId/rework", async (req, res) => {
     deployment_description: row.deployment_description,
     pm: row.pm,
     dep_reject_reason: row.dep_reject_reason,
-
     attachments,
   });
 });
-
 
 // ------------------ LLC LIST ------------------
 app.get("/api/llc", requireAuth, async (req, res) => {
@@ -2201,18 +2294,13 @@ app.get("/api/llc", requireAuth, async (req, res) => {
     const params = [];
     const whereParts = [];
 
-    // ✅ ignore soft-deleted LLCs
     whereParts.push("l.is_deleted IS NOT TRUE");
 
-    // ✅ filtre plant seulement si pas admin (sur la LLC créatrice)
     if (req.user.role !== "admin") {
       params.push(req.user.plant);
       whereParts.push(`l.plant = $${params.length}`);
     }
 
-    // =========================================================
-    // ✅ CAS SPECIAL: DEPLOYMENT => 1 ligne par plant
-    // =========================================================
     const DEP_STATUSES_WITH_PROCESSING = [
       "DEPLOYMENT_PROCESSING",
       "DEPLOYMENT_VALIDATED",
@@ -2228,8 +2316,6 @@ app.get("/api/llc", requireAuth, async (req, res) => {
       const q = `
         SELECT
           l.*,
-
-          -- champs processing (une ligne par plant)
           p.id AS processing_id,
           p.evidence_plant,
           p.deployment_applicability,
@@ -2239,8 +2325,6 @@ app.get("/api/llc", requireAuth, async (req, res) => {
           p.pm,
           p.generated_dep,
           p.deployment_date,
-
-          -- attachments LLC
           COALESCE(
             json_agg(
               DISTINCT jsonb_build_object(
@@ -2252,7 +2336,6 @@ app.get("/api/llc", requireAuth, async (req, res) => {
             ) FILTER (WHERE a.id IS NOT NULL),
             '[]'::json
           ) AS processing_attachments
-
         FROM public.llc l
         INNER JOIN public.llc_deployment_processing p ON p.llc_id = l.id
         LEFT JOIN public.llc_deployment_processing_attachment a ON a.processing_id = p.id
@@ -2265,9 +2348,6 @@ app.get("/api/llc", requireAuth, async (req, res) => {
       return res.json(r.rows);
     }
 
-    // =========================================================
-    // ✅ CAS GENERAL (inchangé): une ligne = une LLC
-    // =========================================================
     if (status) {
       params.push(status);
       whereParts.push(`l.status = $${params.length}::text`);
@@ -2297,7 +2377,7 @@ app.get("/api/llc", requireAuth, async (req, res) => {
     `;
 
     const r = await pool.query(q, params);
-    const ids = r.rows.map(x => x.id);
+    const ids = r.rows.map((x) => x.id);
 
     let doneMap = {};
 
@@ -2326,27 +2406,27 @@ app.get("/api/llc", requireAuth, async (req, res) => {
         creatorPlant: llc.plant,
       });
 
-      const targets = (dist.filteredKeys || []).map(k => `${k} Plant`);
+      const targets = (dist.filteredKeys || []).map((k) => `${k} Plant`);
       const donePlants = doneMap[llc.id] || [];
 
-      const pending = targets.filter(p => !donePlants.includes(p));
-      const done = targets.filter(p => donePlants.includes(p));
+      const pending = targets.filter((p) => !donePlants.includes(p));
+      const done = targets.filter((p) => donePlants.includes(p));
 
       const deployment_progress = [
         pending.length ? `Pending for: ${pending.join(" - ")}` : null,
         done.length ? `Done by: ${done.join(" - ")}` : null,
-      ].filter(Boolean).join(" | ");
+      ]
+        .filter(Boolean)
+        .join(" | ");
 
       return { ...llc, deployment_progress };
     });
 
     res.json(enriched);
-
   } catch (e) {
     res.status(500).json({ error: e.message || "List failed" });
   }
 });
-
 
 // ------------------ LLC DETAILS ------------------
 app.get("/api/llc/:id", requireAuth, async (req, res) => {
@@ -2359,6 +2439,7 @@ app.get("/api/llc/:id", requireAuth, async (req, res) => {
       [llcId]
     );
     const llc = llcRes.rows[0];
+
     if (!llc) return res.status(404).json({ error: "Not found" });
     if (req.user.role !== "admin" && llc.plant !== req.user.plant) {
       return res.status(403).json({ error: "Forbidden" });
@@ -2419,7 +2500,6 @@ app.put("/api/llc/:id/pm-validate", requireAuth, async (req, res) => {
   if (!llcId) return res.status(400).json({ error: "Invalid id" });
 
   try {
-    // Ici tu peux aussi contrôler que req.user.email == validator (PM) si tu veux sécuriser.
     const r = await pool.query(
       `
       UPDATE public.llc
@@ -2443,8 +2523,11 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
   const llcId = Number(req.params.id);
   let newPmToken = "";
   let validatorEmail = "";
+
   if (req.user.role !== "quality_manager") {
-    return res.status(403).json({ error: "Only Quality Managers can create/edit LLC" });
+    return res
+      .status(403)
+      .json({ error: "Only Quality Managers can create/edit LLC" });
   }
 
   try {
@@ -2453,16 +2536,17 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
     const forcedValidator = validatorForPlantExact(forcedPlant);
     validatorEmail = forcedValidator;
     const distribution_to = distributionToForProductLine(llc.product_line_label);
-    const rootCauses = z.array(RootCauseSchema.extend({ id: z.number().optional() }))
+
+    const rootCauses = z
+      .array(RootCauseSchema.extend({ id: z.number().optional() }))
       .min(1)
       .parse(JSON.parse(req.body.rootCauses || "[]"));
 
-    const del = JSON.parse(req.body.delete || "{}"); // { llcAttachments:[], rootCauseAttachments:[], rootCauses:[] }
+    const del = JSON.parse(req.body.delete || "{}");
     const files = req.files || [];
 
     await client.query("BEGIN");
 
-    // 0) sécurité: editable seulement si REJECTED (si tu veux)
     const chk = await client.query(
       "SELECT pm_decision, final_decision FROM public.llc WHERE id=$1 AND is_deleted IS NOT TRUE",
       [llcId]
@@ -2473,10 +2557,11 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
     const finalRejected = chk.rows[0].final_decision === "REJECTED";
 
     if (!pmRejected && !finalRejected) {
-      throw new Error("Editable only if PM decision is REJECTED or Final decision is REJECTED");
+      throw new Error(
+        "Editable only if PM decision is REJECTED or Final decision is REJECTED"
+      );
     }
 
-    // 1) UPDATE llc (tous champs)
     await client.query(
       `UPDATE public.llc
        SET category=$1, problem_short=$2, problem_detail=$3,
@@ -2485,21 +2570,33 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
            editor=$12, plant=$13, failure_mode=$14, conclusions=$15, validator=$16
        WHERE id=$17 AND is_deleted IS NOT TRUE`,
       [
-        llc.category, llc.problem_short, llc.problem_detail,
-        llc.llc_type, llc.customer, llc.product_family, llc.product_type,
-        llc.quality_detection, llc.application_label, llc.product_line_label, llc.part_or_machine_number,
-        llc.editor, forcedPlant, llc.failure_mode, llc.conclusions, forcedValidator,
-        llcId
+        llc.category,
+        llc.problem_short,
+        llc.problem_detail,
+        llc.llc_type,
+        llc.customer,
+        llc.product_family,
+        llc.product_type,
+        llc.quality_detection,
+        llc.application_label,
+        llc.product_line_label,
+        llc.part_or_machine_number,
+        llc.editor,
+        forcedPlant,
+        llc.failure_mode,
+        llc.conclusions,
+        forcedValidator,
+        llcId,
       ]
     );
 
-    // 2) ROOT CAUSES: update/insert + delete removed
-    // delete root causes explicitly removed (del.rootCauses)
     if (Array.isArray(del.rootCauses) && del.rootCauses.length) {
-      await client.query(`DELETE FROM public.llc_root_cause WHERE id = ANY($1::int[]) AND llc_id=$2`, [del.rootCauses, llcId]);
+      await client.query(
+        `DELETE FROM public.llc_root_cause WHERE id = ANY($1::int[]) AND llc_id=$2`,
+        [del.rootCauses, llcId]
+      );
     }
 
-    // upsert root causes one by one
     const rootCauseIds = [];
     for (let i = 0; i < rootCauses.length; i++) {
       const rc = rootCauses[i];
@@ -2509,7 +2606,16 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
            SET root_cause=$1, detailed_cause_description=$2, solution_description=$3, conclusion=$4, process=$5, origin=$6
            WHERE id=$7 AND llc_id=$8
            RETURNING id`,
-          [rc.root_cause, rc.detailed_cause_description, rc.solution_description, rc.conclusion, rc.process, rc.origin, rc.id, llcId]
+          [
+            rc.root_cause,
+            rc.detailed_cause_description,
+            rc.solution_description,
+            rc.conclusion,
+            rc.process,
+            rc.origin,
+            rc.id,
+            llcId,
+          ]
         );
         rootCauseIds[i] = r.rows[0].id;
       } else {
@@ -2517,34 +2623,42 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
           `INSERT INTO public.llc_root_cause (llc_id, root_cause, detailed_cause_description, solution_description, conclusion, process, origin)
            VALUES ($1,$2,$3,$4,$5,$6,$7)
            RETURNING id`,
-          [llcId, rc.root_cause, rc.detailed_cause_description, rc.solution_description, rc.conclusion, rc.process, rc.origin]
+          [
+            llcId,
+            rc.root_cause,
+            rc.detailed_cause_description,
+            rc.solution_description,
+            rc.conclusion,
+            rc.process,
+            rc.origin,
+          ]
         );
         rootCauseIds[i] = r.rows[0].id;
       }
     }
 
-    // 3) DELETE attachments (DB + disque)
-    // A) llc attachments
     if (Array.isArray(del.llcAttachments) && del.llcAttachments.length) {
-      const r = await client.query(
+      await client.query(
         `SELECT storage_path FROM public.llc_attachment WHERE id = ANY($1::int[]) AND llc_id=$2`,
         [del.llcAttachments, llcId]
       );
-      await client.query(`DELETE FROM public.llc_attachment WHERE id = ANY($1::int[]) AND llc_id=$2`, [del.llcAttachments, llcId]);
-      // TODO: supprimer physiquement les fichiers sur disque (fs.unlinkSync) avec uploadPath + storage_path
+      await client.query(
+        `DELETE FROM public.llc_attachment WHERE id = ANY($1::int[]) AND llc_id=$2`,
+        [del.llcAttachments, llcId]
+      );
     }
 
-    // B) root cause attachments
     if (Array.isArray(del.rootCauseAttachments) && del.rootCauseAttachments.length) {
-      const r = await client.query(
+      await client.query(
         `SELECT storage_path FROM public.llc_root_cause_attachment WHERE id = ANY($1::int[])`,
         [del.rootCauseAttachments]
       );
-      await client.query(`DELETE FROM public.llc_root_cause_attachment WHERE id = ANY($1::int[])`, [del.rootCauseAttachments]);
-      // TODO unlink disque
+      await client.query(
+        `DELETE FROM public.llc_root_cause_attachment WHERE id = ANY($1::int[])`,
+        [del.rootCauseAttachments]
+      );
     }
 
-    // 4) INSERT new attachments (comme ton create)
     const scopeMap = {
       badPartFiles: "BAD_PART",
       goodPartFiles: "GOOD_PART",
@@ -2553,7 +2667,7 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
     };
 
     for (const f of files) {
-      const p = relPath(f.path);
+      const p = toAbsoluteFileUrl(relPath(f.path));
 
       const m = /^rootCauseFiles_(\d+)$/.exec(f.fieldname);
       if (m) {
@@ -2579,7 +2693,6 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
       }
     }
 
-    // 5) reset decision + set PENDING
     newPmToken = generatePmToken();
 
     await client.query(
@@ -2591,7 +2704,7 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
           pm_decision_at = NULL,
           pm_reject_reason = NULL,
           pm_validation_date = NULL,
-          
+
           final_decision = NULL,
           final_validation_date = NULL,
           final_reject_reason = NULL,
@@ -2602,12 +2715,10 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
       [newPmToken, llcId]
     );
 
-    // 6) ✅ regenerate docx (like create) and update generated_llc
     if (!fs.existsSync(TEMPLATE_PATH)) {
       throw new Error(`Template not found: ${TEMPLATE_PATH}`);
     }
 
-    // reload DB data (source of truth)
     const llcRes = await client.query(
       `SELECT * FROM public.llc WHERE id=$1 AND is_deleted IS NOT TRUE`,
       [llcId]
@@ -2654,27 +2765,24 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
       attachments: byRc[rc.id] || [],
     }));
 
-    // helper to pick first attachment by scope
     const pickFirstScopeAbs = (scope) => {
       const a = attRes.rows.find((x) => x.scope === scope);
       if (!a) return "";
-      // storage_path is relative like "uploads/xxx" or "xxx" depending your relPath
-      return path.join(process.cwd(), a.storage_path);
+      return absoluteUrlToLocalPath(a.storage_path);
     };
 
-    // build evidence per root cause: choose first attachment (or none)
     const isImage = (filename = "") => /\.(png|jpe?g|gif|bmp|webp)$/i.test(filename);
 
     const buildEvidenceFromDb = (rc) => {
       const a = (rc.attachments || [])[0];
       if (!a) return { evidence_image: "", evidence_link: "", evidence_name: "" };
 
-      const abs = path.join(process.cwd(), a.storage_path);
+      const abs = absoluteUrlToLocalPath(a.storage_path);
       const img = isImage(a.filename);
 
       return {
         evidence_image: img ? abs : "",
-        evidence_link: img ? "" : `${a.storage_path}`, // ou `${UPLOAD_DIR}/...` selon ton front
+        evidence_link: img ? "" : a.storage_path,
         evidence_name: a.filename,
       };
     };
@@ -2683,10 +2791,8 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
       id: llcId,
       ...llcDb,
       distribution_to,
-
       created_at: formatDateDMY(llcDb.created_at || new Date()),
 
-      // images (first by scope)
       situation_before: pickFirstScopeAbs("SITUATION_BEFORE"),
       situation_after: pickFirstScopeAbs("SITUATION_AFTER"),
       bad_part: pickFirstScopeAbs("BAD_PART"),
@@ -2717,9 +2823,11 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
       sofficePath: process.env.SOFFICE_PATH,
     });
 
-    try { fs.unlinkSync(docxAbs); } catch {}
+    try {
+      fs.unlinkSync(docxAbs);
+    } catch {}
 
-    const generatedRel = relPath(pdfAbs);
+    const generatedRel = toAbsoluteFileUrl(relPath(pdfAbs));
 
     await client.query(
       `UPDATE public.llc
@@ -2730,6 +2838,7 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
 
     await client.query("COMMIT");
     res.json({ ok: true });
+
     sendPmReviewMail({
       to: validatorEmail,
       llcId,
@@ -2753,7 +2862,6 @@ app.delete("/api/llc/:id", requireAuth, async (req, res) => {
   try {
     await client.query("BEGIN");
 
-    // (Optionnel) Sécurité: autoriser delete pour plant user
     const chk = await client.query(
       "SELECT id FROM public.llc WHERE id=$1 AND plant=$2 AND is_deleted IS NOT TRUE",
       [llcId, req.user.plant]
@@ -2763,8 +2871,10 @@ app.delete("/api/llc/:id", requireAuth, async (req, res) => {
       return res.status(404).json({ error: "Not found" });
     }
 
-    // Soft delete: garder la ligne + ses dépendances
-    await client.query("UPDATE public.llc SET is_deleted = TRUE WHERE id=$1 AND is_deleted IS NOT TRUE", [llcId]);
+    await client.query(
+      "UPDATE public.llc SET is_deleted = TRUE WHERE id=$1 AND is_deleted IS NOT TRUE",
+      [llcId]
+    );
 
     await client.query("COMMIT");
     res.json({ ok: true });
@@ -2776,15 +2886,10 @@ app.delete("/api/llc/:id", requireAuth, async (req, res) => {
   }
 });
 
-
-
 /* =========================
    Evidence Deployment
 ========================= */
 
-/* =========================
-   ✅ GET LLC LIST 
-========================= */
 app.get("/api/llc-list", async (req, res) => {
   try {
     const { rows } = await pool.query(`
@@ -2821,8 +2926,6 @@ app.get("/api/llc-list/rejected", async (req, res) => {
 
 app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
   const client = await pool.connect();
-
-  // pour envoyer le mail après COMMIT
   let mailAfterCommit = null;
 
   try {
@@ -2830,7 +2933,6 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
       JSON.parse(req.body.evidenceDeployment || "{}")
     );
 
-    // ✅ vérifier LLC existe + statut
     const llcRes = await client.query(
       `
       SELECT id, status, plant, product_line_label
@@ -2845,12 +2947,10 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
     }
 
     const llcRow = llcRes.rows[0];
-
-    // ✅ MODE: edit si processingId + token existent
     const isEditMode = Boolean(payload.processingId && payload.token);
-
-    // ✅ statut attendu selon le mode
-    const expectedStatus = isEditMode ? "DEPLOYMENT_REJECTED" : "DEPLOYMENT_IN_PROGRESS";
+    const expectedStatus = isEditMode
+      ? "DEPLOYMENT_REJECTED"
+      : "DEPLOYMENT_IN_PROGRESS";
 
     if (llcRow.status !== expectedStatus) {
       return res.status(400).json({
@@ -2862,14 +2962,10 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
 
     await client.query("BEGIN");
 
-    // =========================================================
-    // ✅ 1) CREATE vs EDIT processing row
-    // =========================================================
     let processingRow;
     let processingId;
 
     if (isEditMode) {
-      // ✅ 1.a) vérifier le token de rework sur le processing
       const chk = await client.query(
         `
         SELECT *
@@ -2889,7 +2985,6 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
 
       processingId = Number(payload.processingId);
 
-      // ✅ 1.b) update champs (on remet le workflow en PENDING)
       const upd = await client.query(
         `
         UPDATE public.llc_deployment_processing
@@ -2903,8 +2998,6 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
           dep_decision = 'PENDING_FOR_APPROVAL',
           dep_decision_at = NULL,
           dep_reject_reason = NULL,
-
-          -- optionnel: on peut aussi reset le review token (ou le regénérer plus bas)
           dep_review_token = NULL,
           dep_review_token_expires = NULL
         WHERE id = $1
@@ -2922,10 +3015,10 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
 
       processingRow = upd.rows[0];
 
-      // ✅ 1.c) optionnel: supprimer certains anciens attachments si tu les passes depuis le front
-      // payload.deleteAttachmentIds = [1,2,3]
-      if (Array.isArray(payload.deleteAttachmentIds) && payload.deleteAttachmentIds.length) {
-        // récupérer paths pour supprimer physiquement (optionnel)
+      if (
+        Array.isArray(payload.deleteAttachmentIds) &&
+        payload.deleteAttachmentIds.length
+      ) {
         const toDel = await client.query(
           `
           SELECT id, storage_path
@@ -2945,16 +3038,14 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
           [processingId, payload.deleteAttachmentIds]
         );
 
-        // supprimer fichiers disque (optionnel)
         for (const row of toDel.rows) {
-          const abs = path.join(process.cwd(), row.storage_path);
+          const abs = absoluteUrlToLocalPath(row.storage_path);
           try {
-            if (fs.existsSync(abs)) fs.unlinkSync(abs);
+            if (abs && fs.existsSync(abs)) fs.unlinkSync(abs);
           } catch {}
         }
       }
     } else {
-      // ✅ CREATE (ton code actuel)
       const ins = await client.query(
         `
         INSERT INTO public.llc_deployment_processing
@@ -2978,9 +3069,6 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
       processingId = processingRow.id;
     }
 
-    // =========================================================
-    // ✅ 2) Save NEW uploaded files into attachments table
-    // =========================================================
     const files = req.files || [];
     const scopeMap = {
       beforeDepFiles: "BEFORE_DEP",
@@ -2992,7 +3080,7 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
       const scope = scopeMap[f.fieldname];
       if (!scope) continue;
 
-      const storagePath = relPath(f.path);
+      const storagePath = toAbsoluteFileUrl(relPath(f.path));
       await client.query(
         `
         INSERT INTO public.llc_deployment_processing_attachment
@@ -3003,17 +3091,16 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
       );
     }
 
-    // =========================================================
-    // ✅ 3) Reload full LLC + regenerate PDF DEP (reflect latest data/files)
-    // =========================================================
     const llcFull = await client.query(
       `SELECT * FROM public.llc WHERE id=$1 AND is_deleted IS NOT TRUE`,
       [payload.llc_id]
     );
     const llcRowFull = llcFull.rows[0];
 
-    // Important: recharger processingRow si edit (car on l’a update)
-    const procFull = await client.query(`SELECT * FROM public.llc_deployment_processing WHERE id=$1`, [processingId]);
+    const procFull = await client.query(
+      `SELECT * FROM public.llc_deployment_processing WHERE id=$1`,
+      [processingId]
+    );
     const processingRowFull = procFull.rows[0];
 
     const generatedRel = await generateDeploymentPdfForProcessing({
@@ -3031,9 +3118,6 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
       [generatedRel, processingId]
     );
 
-    // =========================================================
-    // ✅ 4) créer (ou recréer) token + statut PENDING pour l’admin
-    // =========================================================
     const depToken = generateDepToken();
 
     await client.query(
@@ -3049,10 +3133,6 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
       [depToken, processingId]
     );
 
-    // =========================================================
-    // ✅ 5) Check si tous les plants ont répondu -> move LLC to DEPLOYMENT_PROCESSING
-    // (en edit mode, tu peux le laisser tel quel : ça ne casse rien)
-    // =========================================================
     const dist = buildDistributionExcludingPlant({
       productLineLabel: llcRow.product_line_label,
       creatorPlant: llcRow.plant,
@@ -3080,9 +3160,6 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
       );
     }
 
-    // =========================================================
-    // ✅ mail after commit
-    // =========================================================
     const adminEmail = await getAdminEmail();
     mailAfterCommit = async () => {
       if (!adminEmail) {
@@ -3110,7 +3187,9 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
 
     Promise.resolve()
       .then(() => mailAfterCommit?.())
-      .catch((err) => console.error("❌ DEP review email failed:", err?.message || err));
+      .catch((err) => {
+        console.error("❌ DEP review email failed:", err?.message || err);
+      });
   } catch (e) {
     try {
       await client.query("ROLLBACK");
@@ -3120,7 +3199,6 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
     client.release();
   }
 });
-
 
 // ================== START ==================
 app.listen(PORT, () => {
