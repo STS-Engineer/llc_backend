@@ -2,6 +2,7 @@ const express = require("express");
 const multer = require("multer");
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const dotenv = require("dotenv");
 const { z } = require("zod");
 const { Pool } = require("pg");
@@ -26,13 +27,24 @@ dotenv.config();
 // ================== CONFIG ==================
 const PORT = process.env.PORT || 3001;
 const UPLOAD_DIR = process.env.UPLOAD_DIR || "uploads";
-const ALLOWED_ORIGINS = [process.env.CORS_ORIGIN || "http://localhost:3000", "http://localhost:3002"];
+const uploadPath = path.join(process.cwd(), UPLOAD_DIR);
+
+const FRONTEND_URL = process.env.FRONTEND_URL || process.env.FRONTEND_BASE_URL || "https://avocarbon-llc.azurewebsites.net";
+const API_BASE_URL = process.env.API_BASE_URL || "https://llc-back.azurewebsites.net";
+const FORM_BASE_URL = process.env.FRONTEND_DEP_FORM_URL || `https://evidence-deployment.azurewebsites.net`;
+
+const ALLOWED_ORIGINS = [process.env.CORS_ORIGIN, FRONTEND_URL, "http://localhost:3000", "http://localhost:3002"].filter(Boolean);
+const RESET_TOKEN_TTL_HOURS = Number(process.env.RESET_TOKEN_TTL_HOURS || 1);
 
 // ================== APP ==================
 const app = express();
 
+fs.mkdirSync(uploadPath, { recursive: true });
+
 // ✅ JSON body parser (needed for auth)
 app.use(express.json({ limit: "2mb" }));
+app.use("/files", express.static(uploadPath));
+app.use(`/${UPLOAD_DIR}`, express.static(uploadPath));
 
 // ================== CORS MANUEL ==================
 app.use((req, res, next) => {
@@ -55,19 +67,12 @@ app.use((req, res, next) => {
 });
 
 // =========================
-// CONFIGURATION FIXE POUR OUTLOOK
+// CONFIGURATION SMTP 
 // =========================
-const SMTP_HOST = "avocarbon-com.mail.protection.outlook.com";
-const SMTP_PORT = 25;
-const EMAIL_FROM_NAME = "Administration STS";
-const EMAIL_FROM = "administration.STS@avocarbon.com";
-
-console.log('📧 Configuration SMTP Outlook:', {
-  host: SMTP_HOST,
-  port: SMTP_PORT,
-  from: EMAIL_FROM,
-  fromName: EMAIL_FROM_NAME
-});
+const SMTP_HOST = process.env.SMTP_HOST || "avocarbon-com.mail.protection.outlook.com";
+const SMTP_PORT = Number(process.env.SMTP_PORT || 25);
+const EMAIL_FROM_NAME = process.env.EMAIL_FROM_NAME || "Administration STS";
+const EMAIL_FROM = process.env.EMAIL_FROM || "administration.STS@avocarbon.com";
 
 // Configuration du transporteur email
 const emailTransporter = nodemailer.createTransport({
@@ -81,7 +86,6 @@ const emailTransporter = nodemailer.createTransport({
   connectionTimeout: 10000,
   greetingTimeout: 10000,
   socketTimeout: 10000,
-  debug: process.env.NODE_ENV === 'development'
 });
 
 async function convertDocxToPdf({
@@ -148,12 +152,59 @@ async function convertDocxToPdf({
   return pdfAbs;
 }
 
+function hashResetToken(token) {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+function buildResetLink({ token, email }) {
+  const base = FRONTEND_URL.replace(/\/$/, "");
+  const query = `token=${encodeURIComponent(token)}${email ? `&email=${encodeURIComponent(email)}` : ""}`;
+  return `${base}/reset-password?${query}`;
+}
+
+async function sendResetPasswordMail({ to, resetLink }) {
+  const html = `
+    <div style="font-family:Segoe UI, Arial, sans-serif; line-height:1.6">
+      <h2>Password reset</h2>
+
+      <p>We received a request to reset your password.</p>
+
+      <p style="margin:24px 0">
+        <a href="${resetLink}"
+           style="
+             background:#0e4e78;
+             color:#ffffff;
+             padding:12px 20px;
+             border-radius:10px;
+             text-decoration:none;
+             font-weight:600;
+             display:inline-block;
+           ">
+          Reset your password
+        </a>
+      </p>
+
+      <p style="font-size:12px;color:#6b7280">
+        If you did not request this, you can ignore this email.
+      </p>
+    </div>
+  `;
+
+  await emailTransporter.sendMail({
+    from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
+    to,
+    subject: "Password reset request",
+    html,
+  });
+
+  console.log(`Password reset email sent to ${to}`);
+}
+
 function generatePmToken() {
   return crypto.randomBytes(32).toString("hex");
 }
 
 async function sendPmReviewMail({ to, llcId, token }) {
-  const FRONTEND_URL = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
   const reviewLink = `${FRONTEND_URL}/pm-review/${llcId}?token=${encodeURIComponent(token)}`;
 
   const html = `
@@ -185,7 +236,6 @@ async function sendPmReviewMail({ to, llcId, token }) {
 
       <p style="font-size:12px;color:#6b7280">
         This link is personal and temporary.<br/>
-        If you are not the correct approver, please ignore this message.
       </p>
     </div>
   `;
@@ -206,7 +256,7 @@ function generateFinalToken() {
 
 async function getLlcEditorAndValidator(llcId) {
   const r = await pool.query(
-    `SELECT editor, validator, plant FROM public.llc WHERE id=$1`,
+    `SELECT editor, validator, plant FROM public.llc WHERE id=$1 AND is_deleted IS NOT TRUE`,
     [llcId]
   );
   if (!r.rowCount) return { editor: "", validator: "", plant: "" };
@@ -218,7 +268,6 @@ async function getLlcEditorAndValidator(llcId) {
 }
 
 async function sendFinalReviewMail({ to, llcId, token }) {
-  const FRONTEND_URL = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
   const reviewLink = `${FRONTEND_URL}/final-review/${llcId}?token=${encodeURIComponent(token)}`;
 
   const { editor, validator, plant } = await getLlcEditorAndValidator(llcId);
@@ -254,7 +303,6 @@ async function sendFinalReviewMail({ to, llcId, token }) {
 
       <p style="font-size:12px;color:#6b7280">
         This link is personal and temporary.<br/>
-        If you are not the correct approver, please ignore this message.
       </p>
     </div>
   `;
@@ -270,7 +318,6 @@ async function sendFinalReviewMail({ to, llcId, token }) {
 }
 
 async function sendPmDecisionResultMail({ to, llcId, decision, reason }) {
-  const FRONTEND_URL = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
   const viewLink = `${FRONTEND_URL}/qualityLessonLearned`;
   const editLink = `${FRONTEND_URL}/llc/${llcId}/edit`;
 
@@ -313,10 +360,9 @@ async function sendPmDecisionResultMail({ to, llcId, decision, reason }) {
 }
 
 async function sendFinalDecisionResultMail({ to, llcId, decision, reason, generated_llc }) {
-  const FRONTEND_URL = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
   const editLink = `${FRONTEND_URL}/llc/${llcId}/edit`;
 
-  const docxLink = generated_llc ? `${FRONTEND_URL}/${generated_llc}` : "";
+  const docxLink = generated_llc ? publicFileUrl(generated_llc) : "";
   const isRejected = decision === "REJECTED";
 
   const html = `
@@ -360,7 +406,7 @@ async function sendFinalDecisionResultMail({ to, llcId, decision, reason, genera
 }
 
 async function getLlcEditorEmail(llcId) {
-  const r = await pool.query(`SELECT editor, generated_llc FROM public.llc WHERE id=$1`, [llcId]);
+  const r = await pool.query(`SELECT editor, generated_llc FROM public.llc WHERE id=$1 AND is_deleted IS NOT TRUE`, [llcId]);
   if (!r.rowCount) return { editorEmail: "", generated_llc: "" };
   return { editorEmail: r.rows[0].editor || "", generated_llc: r.rows[0].generated_llc || "" };
 }
@@ -396,11 +442,10 @@ async function sendDistributionMail({
     return;
   }
 
-  const FORM_LINK = "http://localhost:3002/evidenceDeployment";
+  const FORM_LINK = `${FORM_BASE_URL}/evidenceDeployment`;
 
   // lien vers le PDF (si dispo)
-  const API_BASE_URL = process.env.API_BASE_URL || `http://localhost:${PORT}`;
-  const fileLink = generated_llc ? `${API_BASE_URL}/${generated_llc}` : "";
+  const fileLink = generated_llc ? publicFileUrl(generated_llc) : "";
 
   // (Optionnel) nom de fichier propre
   const fileLabel = generated_llc ? path.basename(generated_llc) : "N/A";
@@ -411,7 +456,7 @@ async function sendDistributionMail({
       <p>Hello,</p>
       <p>
         you have a new LLC Card from <b>${String(productLineLabel || "")}</b> , 
-        <b>${String(creatorPlant || "")}</b> PLANT to transversalize in your plant :
+        <b>${String(creatorPlant || "")}</b> to transversalize in your plant :
         <br/>
         ${
           fileLink
@@ -459,6 +504,63 @@ async function sendDistributionMail({
   });
 
   console.log(`📨 Distribution mail sent for LLC #${llcId} to:`, toList);
+}
+
+async function sendDistributionInfoToAdminMail({
+  to,
+  llcId,
+  productLineLabel,
+  creatorPlant,
+  distributedPlants,   // array ["FRANKFURT Plant", "POITIERS Plant", ...]
+  generated_llc,
+}) {
+  if (!to) {
+    console.error("❌ No admin email. Distribution info not sent.");
+    return;
+  }
+
+  const fileLink = generated_llc ? publicFileUrl(generated_llc) : "";
+  const fileLabel = generated_llc ? path.basename(generated_llc) : "N/A";
+
+  const plantsHtml = (distributedPlants || [])
+    .map(p => `<li>${String(p)}</li>`)
+    .join("");
+
+  const html = `
+    <div style="font-family:Segoe UI, Arial, sans-serif; line-height:1.6; font-size:14px; color:#111827">
+      <h2>LLC #${llcId} – Distributed to plants</h2>
+
+      <p>
+        <b>Product line:</b> ${String(productLineLabel || "N/A")}<br/>
+        <b>Creator plant:</b> ${String(creatorPlant || "N/A")}
+      </p>
+
+      <p>
+        The LLC has been distributed to the following plants:
+      </p>
+
+      <ul>
+        ${plantsHtml || "<li>(none)</li>"}
+      </ul>
+
+      <p>
+        ${
+          fileLink
+            ? `PDF: <a href="${fileLink}">${fileLabel}</a>`
+            : `PDF: ${fileLabel}`
+        }
+      </p>
+    </div>
+  `;
+
+  await emailTransporter.sendMail({
+    from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
+    to,
+    subject: `LLC #${llcId} – Distributed to ${distributedPlants?.length || 0} plant(s)`,
+    html,
+  });
+
+  console.log(`📨 Admin distribution info email sent to ${to} for LLC #${llcId}`);
 }
 
 async function getLlcAttachments(client, llcId) {
@@ -515,9 +617,10 @@ async function getProcessingAttachments(client, processingId) {
   return r.rows || [];
 }
 
-function pickFirstProcessingAbs(attachments, scope) {
+async function pickFirstProcessingAbs(attachments, scope, cache) {
   const a = (attachments || []).find(x => x.scope === scope);
-  return a ? path.join(process.cwd(), a.storage_path) : "";
+  if (!a) return "";
+  return await resolveStorageToImageSource(a.storage_path, cache);
 }
 
 async function generateDeploymentPdfForProcessing({
@@ -551,32 +654,36 @@ async function generateDeploymentPdfForProcessing({
   const rootCausesDb = await getRootCausesWithAttachments(client, llcRow.id);
 
   // ---------- helpers ----------
-  const pickFirstLlcScopeAbs = (attachments, scope) => {
+  const imageCache = new Map();
+
+  const pickFirstLlcScopeAbs = async (attachments, scope) => {
     const a = (attachments || []).find((x) => x.scope === scope);
     if (!a) return "";
-    return path.join(process.cwd(), a.storage_path); // ✅ ABS for ImageModule
+    return await resolveStorageToImageSource(a.storage_path, imageCache);
   };
 
   const isImageFilename = (filename = "") =>
     /\.(png|jpe?g|gif|bmp|webp)$/i.test(filename);
 
-  const buildEvidenceFromDb = (rc) => {
+  const buildEvidenceFromDb = async (rc) => {
     // take first attachment of this root cause (if any)
     const a = (rc.attachments || [])[0];
     if (!a) return { evidence_image: "", evidence_link: "", evidence_name: "" };
 
-    const abs = path.join(process.cwd(), a.storage_path);
     const img = isImageFilename(a.filename);
+    const evidenceImage = img
+      ? await resolveStorageToImageSource(a.storage_path, imageCache)
+      : "";
 
     return {
-      evidence_image: img ? abs : "",     // ✅ for docxtemplater image module
-      evidence_link: img ? "" : a.storage_path,
+      evidence_image: evidenceImage,
+      evidence_link: publicFileUrl(a.storage_path),
       evidence_name: a.filename,
     };
   };
 
-  // ✅ Build rootCauses array exactly like template expects
-  const rootCauses = (rootCausesDb || []).map((rc, i) => ({
+  // ? Build rootCauses array exactly like template expects
+  const rootCauses = await Promise.all((rootCausesDb || []).map(async (rc, i) => ({
     index: i + 1,
     root_cause: rc.root_cause,
     detailed_cause_description: rc.detailed_cause_description,
@@ -584,8 +691,8 @@ async function generateDeploymentPdfForProcessing({
     conclusion: rc.conclusion,
     process: rc.process,
     origin: rc.origin,
-    ...buildEvidenceFromDb(rc),
-  }));
+    ...(await buildEvidenceFromDb(rc)),
+  })));
 
   const docData = {
     // =========================
@@ -615,10 +722,10 @@ async function generateDeploymentPdfForProcessing({
     // =========================
     // ✅ images LLC attendues par template
     // =========================
-    situation_before: pickFirstLlcScopeAbs(llcAtt, "SITUATION_BEFORE"),
-    situation_after: pickFirstLlcScopeAbs(llcAtt, "SITUATION_AFTER"),
-    bad_part: pickFirstLlcScopeAbs(llcAtt, "BAD_PART"),
-    good_part: pickFirstLlcScopeAbs(llcAtt, "GOOD_PART"),
+    situation_before: await pickFirstLlcScopeAbs(llcAtt, "SITUATION_BEFORE"),
+    situation_after: await pickFirstLlcScopeAbs(llcAtt, "SITUATION_AFTER"),
+    bad_part: await pickFirstLlcScopeAbs(llcAtt, "BAD_PART"),
+    good_part: await pickFirstLlcScopeAbs(llcAtt, "GOOD_PART"),
 
     // =========================
     // ✅ root causes table attendue par template
@@ -646,8 +753,8 @@ async function generateDeploymentPdfForProcessing({
       : formatDateDMY(),
 
     // ✅ images processing
-    before_dep: pickFirstProcessingAbs(procAtt, "BEFORE_DEP"),
-    after_dep: pickFirstProcessingAbs(procAtt, "AFTER_DEP"),
+    before_dep: await pickFirstProcessingAbs(procAtt, "BEFORE_DEP", imageCache),
+    after_dep: await pickFirstProcessingAbs(procAtt, "AFTER_DEP", imageCache),
   };
 
   // 1) DOCX buffer
@@ -667,7 +774,8 @@ async function generateDeploymentPdfForProcessing({
 
   try { fs.unlinkSync(docxAbs); } catch {}
 
-  return relPath(pdfAbs);
+  const generatedRel = publicFileUrl(relPath(pdfAbs));
+  return generatedRel;
 }
 
 function generateDepToken() {
@@ -675,7 +783,6 @@ function generateDepToken() {
 }
 
 async function sendDepReviewMail({ to, llcId, processingId, token, evidencePlant }) {
-  const FRONTEND_URL = process.env.FRONTEND_BASE_URL || "http://localhost:3000";
   const reviewLink = `${FRONTEND_URL}/dep-review/${processingId}?token=${encodeURIComponent(token)}`;
 
   const html = `
@@ -709,6 +816,71 @@ async function sendDepReviewMail({ to, llcId, processingId, token, evidencePlant
   console.log(`📨 DEP approval email sent to ${to} for processing #${processingId}`);
 }
 
+function generateDepReworkToken() {
+  return crypto.randomBytes(32).toString("hex");
+}
+
+async function getProcessingPersonEmail(processingId) {
+  const r = await pool.query(`SELECT person FROM public.llc_deployment_processing WHERE id=$1`, [processingId]);
+  return r.rowCount ? (r.rows[0].person || "") : "";
+}
+
+async function sendDepReworkMailToEditor({ to, llcId, processingId, token, reason, evidencePlant }) {
+  const FRONT_FORM_URL = FRONTEND_DEP_FORM_URL;
+
+  const link = `${FRONT_FORM_URL}?processingId=${encodeURIComponent(processingId)}&token=${encodeURIComponent(token)}`;
+
+  const html = `
+    <div style="font-family:Segoe UI, Arial, sans-serif; line-height:1.6">
+      <h2>DEP LLC #${llcId} – Rework required</h2>
+
+      <p>
+        The Evidence Deployment from <b>${String(evidencePlant || "N/A")}</b> has been
+        <b style="color:#b91c1c">REJECTED</b>.
+      </p>
+
+      ${
+        reason
+          ? `<p><b>Reason:</b><br/>${String(reason).replaceAll("\n", "<br/>")}</p>`
+          : ""
+      }
+
+      <p style="margin:24px 0">
+        <a href="${link}"
+           style="background:#ef7807;color:#fff;padding:12px 20px;border-radius:10px;text-decoration:none;font-weight:600;display:inline-block;">
+          Re-open Evidence Deployment (pre-filled)
+        </a>
+      </p>
+
+      <p style="font-size:12px;color:#6b7280">
+        This link is personal and temporary.
+      </p>
+    </div>
+  `;
+
+  await emailTransporter.sendMail({
+    from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
+    to,
+    subject: `DEP LLC #${llcId} – Rework required (${evidencePlant || "N/A"})`,
+    html,
+  });
+
+  console.log(`📨 DEP rework email sent to ${to} for processing #${processingId}`);
+}
+
+function publicFileUrl(storage_path) {
+  if (!storage_path) return "";
+  const remoteUrl = normalizeHttpUrlish(storage_path);
+  if (remoteUrl) return remoteUrl;
+  const base = API_BASE_URL;
+  const norm = normalizeBaseUrl(base);
+  let rel = String(storage_path).replace(/^\/+/, "");
+  const uploadsPrefix = `${UPLOAD_DIR}/`;
+  if (rel.startsWith(uploadsPrefix)) {
+    rel = rel.slice(uploadsPrefix.length);
+  }
+  return `${norm}/files/${rel}`;
+}
 
 // =========================
 // Configuration de la base
@@ -923,12 +1095,50 @@ function getDistributionPlantsForLlcRow(llcRow) {
 }
 
 // ================== JWT helpers ==================
-function signToken(payload) {
+const ACCESS_TOKEN_TTL = process.env.JWT_ACCESS_EXPIRES_IN || process.env.JWT_EXPIRES_IN || "15m";
+const REFRESH_TOKEN_TTL_DAYS = Number(process.env.REFRESH_TOKEN_TTL_DAYS || 7);
+
+function signAccessToken(payload) {
   const secret = process.env.JWT_SECRET;
   if (!secret) throw new Error("JWT_SECRET is missing in .env");
   return jwt.sign(payload, secret, {
-    expiresIn: process.env.JWT_EXPIRES_IN || "7d",
+    expiresIn: ACCESS_TOKEN_TTL,
   });
+}
+
+function generateRefreshToken() {
+  return crypto.randomBytes(32).toString("hex");
+}
+
+function hashRefreshToken(token) {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+function refreshTokenExpiresAt() {
+  return new Date(Date.now() + REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000);
+}
+
+async function createAndStoreRefreshToken(userId, client = pool) {
+  const token = generateRefreshToken();
+  const tokenHash = hashRefreshToken(token);
+  const expiresAt = refreshTokenExpiresAt();
+
+  await client.query(
+    `INSERT INTO public.refresh_tokens (user_id, token_hash, expires_at)
+     VALUES ($1, $2, $3)`,
+    [userId, tokenHash, expiresAt]
+  );
+
+  return token;
+}
+
+async function revokeRefreshTokenByHash(tokenHash, client = pool) {
+  await client.query(
+    `UPDATE public.refresh_tokens
+     SET revoked_at = NOW()
+     WHERE token_hash = $1 AND revoked_at IS NULL`,
+    [tokenHash]
+  );
 }
 
 function requireAuth(req, res, next) {
@@ -946,27 +1156,11 @@ function requireAuth(req, res, next) {
   }
 }
 
-// ================== ensure users table ==================
-async function ensureUsersTable() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS public.users (
-        id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-        name TEXT NOT NULL,
-        email TEXT NOT NULL,
-        plant TEXT NOT NULL,
-        role TEXT NOT NULL,
-        password_hash TEXT NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
-}
+// ================== TEMP DIR (LOCAL ONLY FOR PROCESSING) ==================
+const TEMP_DIR = path.join(os.tmpdir(), "llc_tmp");
+fs.mkdirSync(TEMP_DIR, { recursive: true });
 
-// ================== UPLOAD DIR ==================
-const uploadPath = path.join(process.cwd(), UPLOAD_DIR);
-fs.mkdirSync(uploadPath, { recursive: true });
-app.use(`/${UPLOAD_DIR}`, express.static(uploadPath));
-
-// ✅ generated docx directory
+// Generated PDFs must live under uploads so they can be served back.
 const generatedDirAbs = path.join(uploadPath, "generated");
 fs.mkdirSync(generatedDirAbs, { recursive: true });
 
@@ -982,6 +1176,100 @@ function relPath(absPath) {
 
 function safeName(s) {
   return String(s || "").replace(/[^\w.\-]+/g, "_");
+}
+
+function normalizeHttpUrlish(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (/^https?:\/\//i.test(raw)) return raw;
+  if (/^https?:\/[^/]/i.test(raw)) {
+    return raw.replace(/^https?:\//i, (match) => `${match}/`);
+  }
+  return "";
+}
+
+function isHttpUrl(value) {
+  return Boolean(normalizeHttpUrlish(value));
+}
+
+function normalizeBaseUrl(url) {
+  return String(url || "").replace(/\/$/, "");
+}
+
+function storagePathToLocal(storage_path) {
+  if (!storage_path) return "";
+  const raw = String(storage_path);
+  const remoteUrl = normalizeHttpUrlish(raw);
+
+  let rel = raw;
+  if (remoteUrl) {
+    try {
+      rel = decodeURIComponent(new URL(remoteUrl).pathname || "");
+    } catch {
+      rel = remoteUrl;
+    }
+  }
+
+  const looksAbs = /^[a-zA-Z]:[\\/]/.test(rel) || rel.startsWith("\\\\");
+  if (!remoteUrl && looksAbs) {
+    const resolved = path.resolve(rel);
+    const root = path.resolve(uploadPath);
+    return resolved.startsWith(root) ? resolved : "";
+  }
+
+  rel = String(rel).replace(/\\/g, "/").replace(/^\/+/, "");
+  if (rel.startsWith("files/")) rel = rel.slice("files/".length);
+  const uploadsPrefix = `${UPLOAD_DIR}/`;
+  if (rel.startsWith(uploadsPrefix)) rel = rel.slice(uploadsPrefix.length);
+
+  const abs = path.resolve(path.join(uploadPath, rel));
+  const root = path.resolve(uploadPath);
+  if (!abs.startsWith(root)) return "";
+  return abs;
+}
+
+async function deleteStoredFile(storage_path) {
+  if (!storage_path) return;
+  const abs = storagePathToLocal(storage_path);
+  if (!abs) return;
+  try {
+    if (fs.existsSync(abs)) fs.unlinkSync(abs);
+  } catch {}
+}
+
+async function resolveStorageToImageSource(storage_path, cache) {
+  if (!storage_path) return "";
+  if (cache && cache.has(storage_path)) return cache.get(storage_path);
+
+  const abs = storagePathToLocal(storage_path);
+  const value = abs && fs.existsSync(abs) ? abs : "";
+
+  if (cache) cache.set(storage_path, value);
+  return value;
+}
+
+async function prepareUploads(files, { prefix = "uploads" } = {}) {
+  const uploaded = [];
+  const byField = {};
+  if (!Array.isArray(files)) return { uploaded, byField };
+
+  for (const f of files) {
+    const storagePath = publicFileUrl(relPath(f.path));
+    const entry = {
+      file: f,
+      storagePath,
+      source: f.path,
+    };
+
+    uploaded.push(entry);
+    (byField[f.fieldname] ||= []).push(entry);
+  }
+
+  return { uploaded, byField };
+}
+
+async function cleanupUploaded(_uploaded) {
+  return;
 }
 
 function generateDocxBuffer(templatePath, data) {
@@ -1058,13 +1346,14 @@ function formatDateDMY(date = new Date()) {
 }
 
 // ================== MULTER ==================
-const storage = multer.diskStorage({
+const diskStorage = multer.diskStorage({
   destination: (_, __, cb) => cb(null, uploadPath),
   filename: (_, file, cb) => {
     const safe = file.originalname.replace(/[^\w.\-]+/g, "_");
     cb(null, `${Date.now()}_${Math.random().toString(16).slice(2)}_${safe}`);
   },
 });
+const storage = diskStorage;
 const upload = multer({ storage });
 
 // ================== VALIDATION ==================
@@ -1109,14 +1398,33 @@ const SignInSchema = z.object({
   password: z.string().min(1),
 });
 
+const ForgotPasswordSchema = z.object({
+  email: z.string().email(),
+});
+
+const ResetPasswordSchema = z.object({
+  token: z.string().min(1),
+  password: z.string().min(8),
+  confirm_password: z.string().min(1),
+  email: z.string().email().optional(),
+});
+
+const RefreshTokenSchema = z.object({
+  refresh_token: z.string().min(1),
+});
+
 const EvidenceDeploymentSchema = z.object({
   llc_id: z.number(),
-  deployment_applicability: z.string().min(1, "Required"), // ✅ rename
+  deployment_applicability: z.string().min(1, "Required"), 
   why_not_apply: z.string().max(2000).optional(),
   evidence_plant: z.string().min(1, "Required"),
   person: z.string().min(1, "Required").max(200),
   deployment_description: z.string().min(1, "Required").max(2000),
   pm: z.string().min(1, "Required"),
+  // ✅ pour edit mode
+  processingId: z.number().optional(),
+  token: z.string().optional(),
+  deleteAttachmentIds: z.array(z.number()).optional(),
 }).superRefine((data, ctx) => {
   if (data.deployment_applicability === "Not concerned") {
     if (!data.why_not_apply || data.why_not_apply.trim().length === 0) {
@@ -1150,9 +1458,10 @@ app.post("/api/auth/signup", async (req, res) => {
     );
 
     const user = r.rows[0];
-    const token = signToken({ id: user.id, email: user.email, plant: user.plant, role: user.role });
+    const accessToken = signAccessToken({ id: user.id, email: user.email, plant: user.plant, role: user.role });
+    const refreshToken = await createAndStoreRefreshToken(user.id);
 
-    res.json({ token, user });
+    res.json({ token: accessToken, access_token: accessToken, refresh_token: refreshToken, user });
   } catch (e) {
     res.status(400).json({ error: e.message || "Signup failed" });
   }
@@ -1183,8 +1492,9 @@ app.post("/api/auth/signin", async (req, res) => {
       const ok = await bcrypt.compare(password, u.password_hash);
       if (ok) {
         const user = { id: u.id, name: u.name, email: u.email, plant: u.plant, role: u.role };
-        const token = signToken({ id: u.id, email: u.email, plant: u.plant, role: u.role });
-        return res.json({ token, user });
+        const accessToken = signAccessToken({ id: u.id, email: u.email, plant: u.plant, role: u.role });
+        const refreshToken = await createAndStoreRefreshToken(u.id);
+        return res.json({ token: accessToken, access_token: accessToken, refresh_token: refreshToken, user });
       }
     }
 
@@ -1194,11 +1504,196 @@ app.post("/api/auth/signin", async (req, res) => {
   }
 });
 
+app.post("/api/auth/refresh", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { refresh_token } = RefreshTokenSchema.parse(req.body);
+    const tokenHash = hashRefreshToken(String(refresh_token || "").trim());
+
+    await client.query("BEGIN");
+
+    const r = await client.query(
+      `
+      SELECT rt.id, rt.user_id, rt.expires_at, rt.revoked_at,
+             u.name, u.email, u.plant, u.role
+      FROM public.refresh_tokens rt
+      JOIN public.users u ON u.id = rt.user_id
+      WHERE rt.token_hash = $1
+      FOR UPDATE
+      `,
+      [tokenHash]
+    );
+
+    if (!r.rowCount) {
+      await client.query("ROLLBACK");
+      return res.status(401).json({ error: "Invalid or expired refresh token" });
+    }
+
+    const row = r.rows[0];
+    if (row.revoked_at || new Date(row.expires_at) <= new Date()) {
+      await client.query("ROLLBACK");
+      return res.status(401).json({ error: "Invalid or expired refresh token" });
+    }
+
+    const newRefreshToken = generateRefreshToken();
+    const newRefreshHash = hashRefreshToken(newRefreshToken);
+    const newRefreshExpires = refreshTokenExpiresAt();
+
+    await client.query(
+      `INSERT INTO public.refresh_tokens (user_id, token_hash, expires_at)
+       VALUES ($1, $2, $3)`,
+      [row.user_id, newRefreshHash, newRefreshExpires]
+    );
+
+    await client.query(
+      `UPDATE public.refresh_tokens
+       SET revoked_at = NOW()
+       WHERE id = $1`,
+      [row.id]
+    );
+
+    await client.query("COMMIT");
+
+    const accessToken = signAccessToken({
+      id: row.user_id,
+      email: row.email,
+      plant: row.plant,
+      role: row.role,
+    });
+
+    const user = {
+      id: row.user_id,
+      name: row.name,
+      email: row.email,
+      plant: row.plant,
+      role: row.role,
+    };
+
+    return res.json({
+      token: accessToken,
+      access_token: accessToken,
+      refresh_token: newRefreshToken,
+      user,
+    });
+  } catch (e) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {}
+    return res.status(400).json({ error: e?.message || "Refresh failed" });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/api/auth/logout", async (req, res) => {
+  try {
+    const { refresh_token } = RefreshTokenSchema.parse(req.body);
+    const tokenHash = hashRefreshToken(String(refresh_token || "").trim());
+    await revokeRefreshTokenByHash(tokenHash);
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(400).json({ error: e?.message || "Logout failed" });
+  }
+});
+
+app.post("/api/auth/forgot-password", async (req, res) => {
+  try {
+    const { email } = ForgotPasswordSchema.parse(req.body);
+    const normalizedEmail = email.toLowerCase().trim();
+
+    const exists = await pool.query(
+      "SELECT id FROM public.users WHERE email=$1 LIMIT 1",
+      [normalizedEmail]
+    );
+    if (!exists.rowCount) {
+      return res.status(404).json({ error: "User does not exist" });
+    }
+
+    await pool.query(
+      `UPDATE public.password_reset_tokens
+       SET used_at = NOW()
+       WHERE email = $1 AND used_at IS NULL`,
+      [normalizedEmail]
+    );
+
+    const token = crypto.randomBytes(32).toString("hex");
+    const tokenHash = hashResetToken(token);
+    const expiresAt = new Date(Date.now() + RESET_TOKEN_TTL_HOURS * 60 * 60 * 1000);
+
+    await pool.query(
+      `INSERT INTO public.password_reset_tokens (email, token_hash, expires_at)
+       VALUES ($1, $2, $3)`,
+      [normalizedEmail, tokenHash, expiresAt]
+    );
+
+    const resetLink = buildResetLink({ token, email: normalizedEmail });
+    await sendResetPasswordMail({ to: normalizedEmail, resetLink });
+
+    return res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e?.message || "Reset request failed" });
+  }
+});
+
+app.post("/api/auth/reset-password", async (req, res) => {
+  try {
+    const { token, password, confirm_password, email } = ResetPasswordSchema.parse(req.body);
+
+    if (password !== confirm_password) {
+      return res.status(400).json({ error: "Passwords do not match" });
+    }
+
+    const tokenHash = hashResetToken(token.trim());
+    const record = await pool.query(
+      `SELECT id, email
+       FROM public.password_reset_tokens
+       WHERE token_hash=$1
+         AND used_at IS NULL
+         AND expires_at > NOW()
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [tokenHash]
+    );
+
+    if (!record.rowCount) {
+      return res.status(400).json({ error: "Invalid or expired token" });
+    }
+
+    const tokenEmail = record.rows[0].email;
+    if (email && tokenEmail !== email.toLowerCase().trim()) {
+      return res.status(400).json({ error: "Email mismatch" });
+    }
+
+    const password_hash = await bcrypt.hash(password, 10);
+    const updated = await pool.query(
+      `UPDATE public.users SET password_hash=$1 WHERE email=$2`,
+      [password_hash, tokenEmail]
+    );
+
+    if (!updated.rowCount) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    await pool.query(
+      `UPDATE public.password_reset_tokens
+       SET used_at = NOW()
+       WHERE email = $1 AND used_at IS NULL`,
+      [tokenEmail]
+    );
+
+    return res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e?.message || "Reset request failed" });
+  }
+});
+
 
 // ------------------ LLC CREATE ------------------
 app.post("/api/llc", requireAuth, upload.any(), async (req, res) => {
   const client = await pool.connect();
   let generatedAbsPath = "";
+  let uploaded = [];
+  let byField = {};
 
   if (req.user.role !== "quality_manager") {
     return res.status(403).json({ error: "Only Quality Managers can create/edit LLC" });
@@ -1224,9 +1719,9 @@ app.post("/api/llc", requireAuth, upload.any(), async (req, res) => {
         category, problem_short, problem_detail, llc_type, customer,
         product_family, product_type, quality_detection,
         application_label, product_line_label, part_or_machine_number,
-        editor, plant, failure_mode, conclusions, validator
+        editor, plant, failure_mode, conclusions, validator, is_deleted
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
       RETURNING id`,
       [
         llc.category,
@@ -1245,6 +1740,7 @@ app.post("/api/llc", requireAuth, upload.any(), async (req, res) => {
         llc.failure_mode,
         llc.conclusions,
         forcedValidator,
+        false,
       ]
     );
 
@@ -1276,6 +1772,7 @@ app.post("/api/llc", requireAuth, upload.any(), async (req, res) => {
 
     // 3) Insert attachments
     const files = req.files || [];
+    ({ uploaded, byField } = await prepareUploads(files, { prefix: "uploads" }));
 
     const scopeMap = {
       badPartFiles: "BAD_PART",
@@ -1284,8 +1781,9 @@ app.post("/api/llc", requireAuth, upload.any(), async (req, res) => {
       situationAfterFiles: "SITUATION_AFTER",
     };
 
-    for (const f of files) {
-      const p = relPath(f.path);
+    for (const item of uploaded) {
+      const f = item.file;
+      const p = item.storagePath;
 
       const m = /^rootCauseFiles_(\d+)$/.exec(f.fieldname);
       if (m) {
@@ -1318,22 +1816,23 @@ app.post("/api/llc", requireAuth, upload.any(), async (req, res) => {
       throw new Error(`Template not found: ${TEMPLATE_PATH}`);
     }
 
-    const findFirstImagePath = (fieldname) => {
-      const f = files.find((x) => x.fieldname === fieldname);
-      return f ? f.path : ""; // ✅ chemin ABS
+    const findFirstImageSource = (fieldname) => {
+      const entry = (byField[fieldname] || [])[0];
+      return entry ? entry.source : "";
     };
 
     const isImage = (filename = "") =>
       /\.(png|jpe?g|gif|bmp|webp)$/i.test(filename);
 
     const buildEvidence = (idx) => {
-      const f = files.find((x) => x.fieldname === `rootCauseFiles_${idx}`);
-      if (!f) return { evidence_image: "", evidence_link: "", evidence_name: "" };
+      const entry = (byField[`rootCauseFiles_${idx}`] || [])[0];
+      if (!entry) return { evidence_image: "", evidence_link: "", evidence_name: "" };
 
+      const f = entry.file;
       const img = isImage(f.originalname);
       return {
-        evidence_image: img ? f.path : "",                 // ✅ pour image module
-        evidence_link: img ? "" : `${UPLOAD_DIR}/${path.basename(f.path)}`, // ✅ lien web
+        evidence_image: img ? entry.source : "",
+        evidence_link: publicFileUrl(entry.storagePath),
         evidence_name: f.originalname,
       };
     };
@@ -1344,10 +1843,10 @@ app.post("/api/llc", requireAuth, upload.any(), async (req, res) => {
       distribution_to: dist.filteredText,
       created_at: formatDateDMY(),
 
-      situation_before: findFirstImagePath("situationBeforeFiles"),
-      situation_after: findFirstImagePath("situationAfterFiles"),
-      bad_part: findFirstImagePath("badPartFiles"),
-      good_part: findFirstImagePath("goodPartFiles"),
+      situation_before: findFirstImageSource("situationBeforeFiles"),
+      situation_after: findFirstImageSource("situationAfterFiles"),
+      bad_part: findFirstImageSource("badPartFiles"),
+      good_part: findFirstImageSource("goodPartFiles"),
 
       // utile si ton template a une boucle rootCauses
       rootCauses: rootCauses.map((rc, i) => ({
@@ -1384,12 +1883,12 @@ app.post("/api/llc", requireAuth, upload.any(), async (req, res) => {
 
     // 4) sauver le PDF comme "generated_llc"
     generatedAbsPath = pdfAbs;
-    const generatedRel = relPath(pdfAbs);
+    const generatedRel = publicFileUrl(relPath(pdfAbs));
 
     await client.query(
       `UPDATE public.llc
       SET generated_llc = $1
-      WHERE id = $2`,
+      WHERE id = $2 AND is_deleted IS NOT TRUE`,
       [generatedRel, llcId]
     );
 
@@ -1408,7 +1907,7 @@ app.post("/api/llc", requireAuth, upload.any(), async (req, res) => {
           pm_decision_at = NULL,
           pm_reject_reason = NULL,
           pm_validation_date = NULL
-      WHERE id = $2
+      WHERE id = $2 AND is_deleted IS NOT TRUE
       `,
       [pmToken, llcId]
     );
@@ -1434,6 +1933,8 @@ app.post("/api/llc", requireAuth, upload.any(), async (req, res) => {
   } catch (e) {
     await client.query("ROLLBACK");
 
+    await cleanupUploaded(uploaded);
+
     // cleanup docx if created
     try {
       if (generatedAbsPath && fs.existsSync(generatedAbsPath)) fs.unlinkSync(generatedAbsPath);
@@ -1458,6 +1959,7 @@ app.get("/api/llc/:id/pm-review", async (req, res) => {
     SELECT *
     FROM public.llc
     WHERE id = $1
+      AND is_deleted IS NOT TRUE
       AND pm_review_token = $2
       AND (pm_review_token_expires IS NULL OR pm_review_token_expires > NOW())
     `,
@@ -1495,7 +1997,7 @@ app.post("/api/llc/:id/pm-review/decision", async (req, res) => {
           pm_decision_at = NOW(),
           pm_validation_date = NOW(),
           status = 'WAITING_FOR_VALIDATION'
-      WHERE id = $1 AND pm_review_token = $2
+      WHERE id = $1 AND pm_review_token = $2 AND is_deleted IS NOT TRUE
       RETURNING id
       `,
       [llcId, token]
@@ -1514,7 +2016,7 @@ app.post("/api/llc/:id/pm-review/decision", async (req, res) => {
           final_decision = 'PENDING_FOR_VALIDATION',
           final_validation_date = NULL,
           final_reject_reason = NULL
-      WHERE id = $2
+      WHERE id = $2 AND is_deleted IS NOT TRUE
       `,
       [finalToken, llcId]
     );
@@ -1551,7 +2053,7 @@ app.post("/api/llc/:id/pm-review/decision", async (req, res) => {
     SET pm_decision = 'REJECTED',
         pm_decision_at = NOW(),
         pm_reject_reason = $3
-    WHERE id = $1 AND pm_review_token = $2
+    WHERE id = $1 AND pm_review_token = $2 AND is_deleted IS NOT TRUE
     RETURNING *
     `,
     [llcId, token, reason || ""]
@@ -1580,6 +2082,7 @@ app.get("/api/llc/:id/final-review", async (req, res) => {
     SELECT *
     FROM public.llc
     WHERE id = $1
+      AND is_deleted IS NOT TRUE
       AND final_review_token = $2
       AND (final_review_token_expires IS NULL OR final_review_token_expires > NOW())
     `,
@@ -1618,6 +2121,7 @@ app.post("/api/llc/:id/final-review/decision", async (req, res) => {
         final_reject_reason = $4,
         status = $5
     WHERE id = $1
+      AND is_deleted IS NOT TRUE
       AND final_review_token = $2
       AND (final_review_token_expires IS NULL OR final_review_token_expires > NOW())
     RETURNING *
@@ -1639,16 +2143,17 @@ app.post("/api/llc/:id/final-review/decision", async (req, res) => {
   res.json(r.rows[0]);
 
   if (action === "approve") {
-    // récupérer plant + product_line_label depuis la DB (source de vérité)
-    const llcRow = r.rows[0]; // tu fais RETURNING * donc tu l’as
+    const llcRow = r.rows[0];
 
     const dist = buildDistributionExcludingPlant({
       productLineLabel: llcRow.product_line_label,
       creatorPlant: llcRow.plant,
     });
 
+    const distributedPlants = (dist.filteredKeys || []).map(k => `${k} Plant`);
     const toList = await getDistributionRecipientsEmails({ plantKeys: dist.filteredKeys });
 
+    // 1) mail aux plants (QM + PM)
     sendDistributionMail({
       toList,
       llcId,
@@ -1656,8 +2161,18 @@ app.post("/api/llc/:id/final-review/decision", async (req, res) => {
       creatorPlant: llcRow.plant,
       generated_llc: llcRow.generated_llc,
     }).catch((err) => console.error("❌ Distribution mail failed:", err?.message || err));
-  }
 
+    // 2) mail informatif à l'admin (liste des plants)
+    const adminEmail = await getAdminEmail();
+    sendDistributionInfoToAdminMail({
+      to: adminEmail,
+      llcId,
+      productLineLabel: llcRow.product_line_label,
+      creatorPlant: llcRow.plant,
+      distributedPlants,
+      generated_llc: llcRow.generated_llc,
+    }).catch((err) => console.error("❌ Admin distribution info mail failed:", err?.message || err));
+  }
 });
 
 
@@ -1682,6 +2197,7 @@ app.get("/api/dep-processing/:processingId/review", async (req, res) => {
     FROM public.llc_deployment_processing p
     JOIN public.llc l ON l.id = p.llc_id
     WHERE p.id = $1
+      AND l.is_deleted IS NOT TRUE
       AND p.dep_review_token = $2
       AND (p.dep_review_token_expires IS NULL OR p.dep_review_token_expires > NOW())
     `,
@@ -1738,7 +2254,7 @@ app.post("/api/dep-processing/:processingId/review/decision", async (req, res) =
 
     // 2) reload llc (source de vérité) to compute targets
     const llcRes = await client.query(
-      `SELECT id, status, plant, product_line_label FROM public.llc WHERE id=$1`,
+      `SELECT id, status, plant, product_line_label FROM public.llc WHERE id=$1 AND is_deleted IS NOT TRUE`,
       [processingRow.llc_id]
     );
     if (!llcRes.rowCount) throw new Error("LLC not found");
@@ -1773,18 +2289,55 @@ app.post("/api/dep-processing/:processingId/review/decision", async (req, res) =
     // 5) update LLC status
     if (anyRejected) {
       await client.query(
-        `UPDATE public.llc SET status='DEPLOYMENT_REJECTED' WHERE id=$1`,
+        `UPDATE public.llc SET status='DEPLOYMENT_REJECTED' WHERE id=$1 AND is_deleted IS NOT TRUE`,
         [processingRow.llc_id]
       );
     } else if (allApproved) {
       await client.query(
-        `UPDATE public.llc SET status='DEPLOYMENT_VALIDATED' WHERE id=$1`,
+        `UPDATE public.llc SET status='DEPLOYMENT_VALIDATED' WHERE id=$1 AND is_deleted IS NOT TRUE`,
         [processingRow.llc_id]
       );
     } else {
       // on peut laisser DEPLOYMENT_PROCESSING
       // (optionnel) enforce it:
-      // await client.query(`UPDATE public.llc SET status='DEPLOYMENT_PROCESSING' WHERE id=$1`, [processingRow.llc_id]);
+      // await client.query(`UPDATE public.llc SET status='DEPLOYMENT_PROCESSING' WHERE id=$1 AND is_deleted IS NOT TRUE`, [processingRow.llc_id]);
+    }
+
+    let reworkMailAfterCommit = null;
+
+    if (decision === "REJECTED") {
+      // 1) générer token rework
+      const reworkToken = generateDepReworkToken();
+
+      // 2) stocker token
+      await client.query(
+        `
+        UPDATE public.llc_deployment_processing
+        SET dep_rework_token = $1,
+            dep_rework_token_expires = NOW() + INTERVAL '30 days'
+        WHERE id = $2
+        `,
+        [reworkToken, processingId]
+      );
+
+      // 3) récupérer email person 
+      const personEmail = await getProcessingPersonEmail(processingRow.id);
+
+      // 4) préparer mail après commit (comme tu fais ailleurs)
+      reworkMailAfterCommit = async () => {
+        if (!personEmail) {
+          console.error("❌ No person email found. Rework mail not sent.");
+          return;
+        }
+        await sendDepReworkMailToEditor({
+          to: personEmail,
+          llcId: processingRow.llc_id,
+          processingId: processingRow.id,
+          token: reworkToken,
+          reason: rejectReason || "",
+          evidencePlant: processingRow.evidence_plant,
+        });
+      };
     }
 
     await client.query("COMMIT");
@@ -1795,12 +2348,81 @@ app.post("/api/dep-processing/:processingId/review/decision", async (req, res) =
       llcStatus:
         anyRejected ? "DEPLOYMENT_REJECTED" : allApproved ? "DEPLOYMENT_VALIDATED" : llcRow.status,
     });
+    Promise.resolve()
+      .then(() => reworkMailAfterCommit?.())
+      .catch((err) => console.error("❌ DEP rework email failed:", err?.message || err));
+
   } catch (e) {
     try { await client.query("ROLLBACK"); } catch {}
     res.status(400).json({ error: e?.message || "Decision failed" });
   } finally {
     client.release();
   }
+});
+
+app.get("/api/dep-processing/:processingId/rework", async (req, res) => {
+  const processingId = Number(req.params.processingId);
+  const token = String(req.query.token || "");
+
+  if (!processingId || !token) {
+    return res.status(400).json({ error: "Missing processingId or token" });
+  }
+
+  const r = await pool.query(
+    `
+    SELECT
+      p.*,
+      l.id AS llc_id,
+      l.problem_short,
+      l.customer,
+      l.plant,
+      l.product_line_label
+    FROM public.llc_deployment_processing p
+    JOIN public.llc l ON l.id = p.llc_id
+    WHERE p.id = $1
+      AND l.is_deleted IS NOT TRUE
+      AND p.dep_rework_token = $2
+      AND (p.dep_rework_token_expires IS NULL OR p.dep_rework_token_expires > NOW())
+    `,
+    [processingId, token]
+  );
+
+  if (!r.rowCount) return res.status(404).json({ error: "Invalid or expired link" });
+
+  const row = r.rows[0];
+
+  // ✅ charger les fichiers déjà stockés
+  const att = await pool.query(
+    `
+    SELECT id, scope, filename, storage_path
+    FROM public.llc_deployment_processing_attachment
+    WHERE processing_id = $1
+    ORDER BY id ASC
+    `,
+    [processingId]
+  );
+
+  const attachments = (att.rows || []).map(a => ({
+    id: a.id,
+    scope: a.scope,             
+    filename: a.filename,
+    storage_path: a.storage_path,
+    url: publicFileUrl(a.storage_path),
+  }));
+
+  res.json({
+    processingId: row.id,
+    llc_id: row.llc_id,
+    evidence_plant: row.evidence_plant,
+    deployment_applicability: row.deployment_applicability,
+    why_not_apply: row.why_not_apply,
+    person: row.person,
+    deployment_description: row.deployment_description,
+    pm: row.pm,
+    dep_reject_reason: row.dep_reject_reason,
+
+    attachments,
+  });
 });
 
 
@@ -1813,6 +2435,9 @@ app.get("/api/llc", requireAuth, async (req, res) => {
   try {
     const params = [];
     const whereParts = [];
+
+    // ✅ ignore soft-deleted LLCs
+    whereParts.push("l.is_deleted IS NOT TRUE");
 
     // ✅ filtre plant seulement si pas admin (sur la LLC créatrice)
     if (req.user.role !== "admin") {
@@ -1964,12 +2589,15 @@ app.get("/api/llc/:id", requireAuth, async (req, res) => {
   if (!llcId) return res.status(400).json({ error: "Invalid id" });
 
   try {
-    const llcRes = await pool.query(`SELECT * FROM public.llc WHERE id = $1`, [llcId]);
+    const llcRes = await pool.query(
+      `SELECT * FROM public.llc WHERE id = $1 AND is_deleted IS NOT TRUE`,
+      [llcId]
+    );
     const llc = llcRes.rows[0];
+    if (!llc) return res.status(404).json({ error: "Not found" });
     if (req.user.role !== "admin" && llc.plant !== req.user.plant) {
       return res.status(403).json({ error: "Forbidden" });
     }
-    if (!llc) return res.status(404).json({ error: "Not found" });
 
     const attRes = await pool.query(
       `SELECT id, scope, filename, storage_path
@@ -2031,7 +2659,7 @@ app.put("/api/llc/:id/pm-validate", requireAuth, async (req, res) => {
       `
       UPDATE public.llc
       SET pm_validation_date = NOW()
-      WHERE id = $1
+      WHERE id = $1 AND is_deleted IS NOT TRUE
       RETURNING id, pm_validation_date
       `,
       [llcId]
@@ -2050,6 +2678,7 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
   const llcId = Number(req.params.id);
   let newPmToken = "";
   let validatorEmail = "";
+  let uploaded = [];
   if (req.user.role !== "quality_manager") {
     return res.status(403).json({ error: "Only Quality Managers can create/edit LLC" });
   }
@@ -2066,12 +2695,13 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
 
     const del = JSON.parse(req.body.delete || "{}"); // { llcAttachments:[], rootCauseAttachments:[], rootCauses:[] }
     const files = req.files || [];
+    ({ uploaded } = await prepareUploads(files, { prefix: "uploads" }));
 
     await client.query("BEGIN");
 
     // 0) sécurité: editable seulement si REJECTED (si tu veux)
     const chk = await client.query(
-      "SELECT pm_decision, final_decision FROM public.llc WHERE id=$1",
+      "SELECT pm_decision, final_decision FROM public.llc WHERE id=$1 AND is_deleted IS NOT TRUE",
       [llcId]
     );
     if (!chk.rowCount) throw new Error("Not found");
@@ -2090,7 +2720,7 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
            llc_type=$4, customer=$5, product_family=$6, product_type=$7,
            quality_detection=$8, application_label=$9, product_line_label=$10, part_or_machine_number=$11,
            editor=$12, plant=$13, failure_mode=$14, conclusions=$15, validator=$16
-       WHERE id=$17`,
+       WHERE id=$17 AND is_deleted IS NOT TRUE`,
       [
         llc.category, llc.problem_short, llc.problem_detail,
         llc.llc_type, llc.customer, llc.product_family, llc.product_type,
@@ -2138,7 +2768,9 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
         [del.llcAttachments, llcId]
       );
       await client.query(`DELETE FROM public.llc_attachment WHERE id = ANY($1::int[]) AND llc_id=$2`, [del.llcAttachments, llcId]);
-      // TODO: supprimer physiquement les fichiers sur disque (fs.unlinkSync) avec uploadPath + storage_path
+      for (const row of r.rows) {
+        await deleteStoredFile(row.storage_path);
+      }
     }
 
     // B) root cause attachments
@@ -2148,7 +2780,9 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
         [del.rootCauseAttachments]
       );
       await client.query(`DELETE FROM public.llc_root_cause_attachment WHERE id = ANY($1::int[])`, [del.rootCauseAttachments]);
-      // TODO unlink disque
+      for (const row of r.rows) {
+        await deleteStoredFile(row.storage_path);
+      }
     }
 
     // 4) INSERT new attachments (comme ton create)
@@ -2159,8 +2793,9 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
       situationAfterFiles: "SITUATION_AFTER",
     };
 
-    for (const f of files) {
-      const p = relPath(f.path);
+    for (const item of uploaded) {
+      const f = item.file;
+      const p = item.storagePath;
 
       const m = /^rootCauseFiles_(\d+)$/.exec(f.fieldname);
       if (m) {
@@ -2204,7 +2839,7 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
           final_reject_reason = NULL,
           final_review_token = NULL,
           final_review_token_expires = NULL
-      WHERE id = $2
+      WHERE id = $2 AND is_deleted IS NOT TRUE
       `,
       [newPmToken, llcId]
     );
@@ -2215,7 +2850,10 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
     }
 
     // reload DB data (source of truth)
-    const llcRes = await client.query(`SELECT * FROM public.llc WHERE id=$1`, [llcId]);
+    const llcRes = await client.query(
+      `SELECT * FROM public.llc WHERE id=$1 AND is_deleted IS NOT TRUE`,
+      [llcId]
+    );
     const llcDb = llcRes.rows[0];
 
     const attRes = await client.query(
@@ -2259,29 +2897,37 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
     }));
 
     // helper to pick first attachment by scope
-    const pickFirstScopeAbs = (scope) => {
+    const imageCache = new Map();
+    const pickFirstScopeAbs = async (scope) => {
       const a = attRes.rows.find((x) => x.scope === scope);
       if (!a) return "";
-      // storage_path is relative like "uploads/xxx" or "xxx" depending your relPath
-      return path.join(process.cwd(), a.storage_path);
+      // storage_path can be full URL or relative (files/..., uploads/...)
+      return await resolveStorageToImageSource(a.storage_path, imageCache);
     };
 
     // build evidence per root cause: choose first attachment (or none)
     const isImage = (filename = "") => /\.(png|jpe?g|gif|bmp|webp)$/i.test(filename);
 
-    const buildEvidenceFromDb = (rc) => {
+    const buildEvidenceFromDb = async (rc) => {
       const a = (rc.attachments || [])[0];
       if (!a) return { evidence_image: "", evidence_link: "", evidence_name: "" };
 
-      const abs = path.join(process.cwd(), a.storage_path);
       const img = isImage(a.filename);
+      const evidenceImage = img
+        ? await resolveStorageToImageSource(a.storage_path, imageCache)
+        : "";
 
       return {
-        evidence_image: img ? abs : "",
-        evidence_link: img ? "" : `${a.storage_path}`, // ou `${UPLOAD_DIR}/...` selon ton front
+        evidence_image: evidenceImage,
+        evidence_link: publicFileUrl(a.storage_path), // ou `${UPLOAD_DIR}/...` selon ton front
         evidence_name: a.filename,
       };
     };
+
+    const rootCausesDoc = await Promise.all(rootCausesDb.map(async (rc) => ({
+      ...rc,
+      ...(await buildEvidenceFromDb(rc)),
+    })));
 
     const docData = {
       id: llcId,
@@ -2291,15 +2937,12 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
       created_at: formatDateDMY(llcDb.created_at || new Date()),
 
       // images (first by scope)
-      situation_before: pickFirstScopeAbs("SITUATION_BEFORE"),
-      situation_after: pickFirstScopeAbs("SITUATION_AFTER"),
-      bad_part: pickFirstScopeAbs("BAD_PART"),
-      good_part: pickFirstScopeAbs("GOOD_PART"),
+      situation_before: await pickFirstScopeAbs("SITUATION_BEFORE"),
+      situation_after: await pickFirstScopeAbs("SITUATION_AFTER"),
+      bad_part: await pickFirstScopeAbs("BAD_PART"),
+      good_part: await pickFirstScopeAbs("GOOD_PART"),
 
-      rootCauses: rootCausesDb.map((rc) => ({
-        ...rc,
-        ...buildEvidenceFromDb(rc),
-      })),
+      rootCauses: rootCausesDoc,
 
       rootCauses_text: rootCausesDb
         .map(
@@ -2323,12 +2966,12 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
 
     try { fs.unlinkSync(docxAbs); } catch {}
 
-    const generatedRel = relPath(pdfAbs);
+    const generatedRel = publicFileUrl(relPath(pdfAbs));
 
     await client.query(
       `UPDATE public.llc
       SET generated_llc = $1
-      WHERE id = $2`,
+      WHERE id = $2 AND is_deleted IS NOT TRUE`,
       [generatedRel, llcId]
     );
 
@@ -2343,6 +2986,7 @@ app.put("/api/llc/:id", requireAuth, upload.any(), async (req, res) => {
     });
   } catch (e) {
     await client.query("ROLLBACK");
+    await cleanupUploaded(uploaded);
     res.status(400).json({ error: e.message || "Update failed" });
   } finally {
     client.release();
@@ -2359,7 +3003,7 @@ app.delete("/api/llc/:id", requireAuth, async (req, res) => {
 
     // (Optionnel) Sécurité: autoriser delete فقط للـ plant متاع user
     const chk = await client.query(
-      "SELECT id FROM public.llc WHERE id=$1 AND plant=$2",
+      "SELECT id FROM public.llc WHERE id=$1 AND plant=$2 AND is_deleted IS NOT TRUE",
       [llcId, req.user.plant]
     );
     if (!chk.rowCount) {
@@ -2367,13 +3011,8 @@ app.delete("/api/llc/:id", requireAuth, async (req, res) => {
       return res.status(404).json({ error: "Not found" });
     }
 
-    // Supprimer d'abord les dépendances (si pas ON DELETE CASCADE)
-    await client.query("DELETE FROM public.llc_root_cause_attachment WHERE root_cause_id IN (SELECT id FROM public.llc_root_cause WHERE llc_id=$1)", [llcId]);
-    await client.query("DELETE FROM public.llc_root_cause WHERE llc_id=$1", [llcId]);
-    await client.query("DELETE FROM public.llc_attachment WHERE llc_id=$1", [llcId]);
-
-    // Enfin supprimer llc
-    await client.query("DELETE FROM public.llc WHERE id=$1", [llcId]);
+    // Soft delete: garder la ligne + ses dépendances
+    await client.query("UPDATE public.llc SET is_deleted = TRUE WHERE id=$1 AND is_deleted IS NOT TRUE", [llcId]);
 
     await client.query("COMMIT");
     res.json({ ok: true });
@@ -2384,8 +3023,6 @@ app.delete("/api/llc/:id", requireAuth, async (req, res) => {
     client.release();
   }
 });
-
-
 
 
 
@@ -2402,6 +3039,7 @@ app.get("/api/llc-list", async (req, res) => {
       SELECT id, problem_short
       FROM public.llc
       WHERE status = 'DEPLOYMENT_IN_PROGRESS'
+        AND is_deleted IS NOT TRUE
       ORDER BY problem_short ASC
     `);
 
@@ -2412,12 +3050,29 @@ app.get("/api/llc-list", async (req, res) => {
   }
 });
 
+app.get("/api/llc-list/rejected", async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT id, problem_short
+      FROM public.llc
+      WHERE status = 'DEPLOYMENT_REJECTED'
+        AND is_deleted IS NOT TRUE
+      ORDER BY problem_short ASC
+    `);
+
+    res.json(rows);
+  } catch (error) {
+    console.error("❌ Error fetching rejected LLC list:", error);
+    res.status(500).json({ error: "Failed to load LLC list" });
+  }
+});
 
 app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
   const client = await pool.connect();
 
   // pour envoyer le mail après COMMIT
   let mailAfterCommit = null;
+  let uploaded = [];
 
   try {
     const payload = EvidenceDeploymentSchema.parse(
@@ -2429,7 +3084,7 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
       `
       SELECT id, status, plant, product_line_label
       FROM public.llc
-      WHERE id = $1
+      WHERE id = $1 AND is_deleted IS NOT TRUE
       `,
       [payload.llc_id]
     );
@@ -2439,48 +3094,154 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
     }
 
     const llcRow = llcRes.rows[0];
-    if (llcRow.status !== "DEPLOYMENT_IN_PROGRESS") {
-      return res.status(400).json({ error: "LLC is not in DEPLOYMENT_IN_PROGRESS" });
+
+    // ✅ MODE: edit si processingId + token existent
+    const isEditMode = Boolean(payload.processingId && payload.token);
+
+    // ✅ statut attendu selon le mode
+    const expectedStatus = isEditMode ? "DEPLOYMENT_REJECTED" : "DEPLOYMENT_IN_PROGRESS";
+
+    if (llcRow.status !== expectedStatus) {
+      return res.status(400).json({
+        error: `LLC is not in ${expectedStatus}`,
+        llc_status: llcRow.status,
+        expected: expectedStatus,
+      });
     }
 
     await client.query("BEGIN");
 
-    // ✅ 1) Insert processing row
-    const ins = await client.query(
-      `
-      INSERT INTO public.llc_deployment_processing
-        (llc_id, evidence_plant, deployment_applicability,
-         why_not_apply, person, deployment_description, pm)
-      VALUES ($1,$2,$3,$4,$5,$6,$7)
-      RETURNING *
-      `,
-      [
-        payload.llc_id,
-        payload.evidence_plant,
-        payload.deployment_applicability,
-        payload.why_not_apply || "",
-        payload.person,
-        payload.deployment_description,
-        payload.pm,
-      ]
-    );
+    // =========================================================
+    // ✅ 1) CREATE vs EDIT processing row
+    // =========================================================
+    let processingRow;
+    let processingId;
 
-    const processingRow = ins.rows[0];
-    const processingId = processingRow.id;
+    if (isEditMode) {
+      // ✅ 1.a) vérifier le token de rework sur le processing
+      const chk = await client.query(
+        `
+        SELECT *
+        FROM public.llc_deployment_processing
+        WHERE id = $1
+          AND llc_id = $2
+          AND dep_rework_token = $3
+          AND (dep_rework_token_expires IS NULL OR dep_rework_token_expires > NOW())
+        `,
+        [Number(payload.processingId), payload.llc_id, String(payload.token)]
+      );
 
-    // ✅ 2) Save uploaded files into llc_deployment_processing_attachment
+      if (!chk.rowCount) {
+        await client.query("ROLLBACK");
+      await cleanupUploaded(uploaded);
+        return res.status(404).json({ error: "Invalid or expired rework link" });
+      }
+
+      processingId = Number(payload.processingId);
+
+      // ✅ 1.b) update champs (on remet le workflow en PENDING)
+      const upd = await client.query(
+        `
+        UPDATE public.llc_deployment_processing
+        SET
+          deployment_applicability = $2,
+          why_not_apply = $3,
+          person = $4,
+          deployment_description = $5,
+          pm = $6,
+
+          dep_decision = 'PENDING_FOR_APPROVAL',
+          dep_decision_at = NULL,
+          dep_reject_reason = NULL,
+
+          -- optionnel: on peut aussi reset le review token (ou le regénérer plus bas)
+          dep_review_token = NULL,
+          dep_review_token_expires = NULL
+        WHERE id = $1
+        RETURNING *
+        `,
+        [
+          processingId,
+          payload.deployment_applicability,
+          payload.why_not_apply || "",
+          payload.person,
+          payload.deployment_description,
+          payload.pm,
+        ]
+      );
+
+      processingRow = upd.rows[0];
+
+      // ✅ 1.c) optionnel: supprimer certains anciens attachments si tu les passes depuis le front
+      // payload.deleteAttachmentIds = [1,2,3]
+      if (Array.isArray(payload.deleteAttachmentIds) && payload.deleteAttachmentIds.length) {
+        // récupérer paths pour supprimer physiquement (optionnel)
+        const toDel = await client.query(
+          `
+          SELECT id, storage_path
+          FROM public.llc_deployment_processing_attachment
+          WHERE processing_id = $1
+            AND id = ANY($2::int[])
+          `,
+          [processingId, payload.deleteAttachmentIds]
+        );
+
+        await client.query(
+          `
+          DELETE FROM public.llc_deployment_processing_attachment
+          WHERE processing_id = $1
+            AND id = ANY($2::int[])
+          `,
+          [processingId, payload.deleteAttachmentIds]
+        );
+
+        // supprimer fichiers disque (optionnel)
+        for (const row of toDel.rows) {
+          await deleteStoredFile(row.storage_path);
+        }
+      }
+    } else {
+      // ✅ CREATE (ton code actuel)
+      const ins = await client.query(
+        `
+        INSERT INTO public.llc_deployment_processing
+          (llc_id, evidence_plant, deployment_applicability,
+           why_not_apply, person, deployment_description, pm)
+        VALUES ($1,$2,$3,$4,$5,$6,$7)
+        RETURNING *
+        `,
+        [
+          payload.llc_id,
+          payload.evidence_plant,
+          payload.deployment_applicability,
+          payload.why_not_apply || "",
+          payload.person,
+          payload.deployment_description,
+          payload.pm,
+        ]
+      );
+
+      processingRow = ins.rows[0];
+      processingId = processingRow.id;
+    }
+
+    // =========================================================
+    // ✅ 2) Save NEW uploaded files into attachments table
+    // =========================================================
     const files = req.files || [];
+    ({ uploaded } = await prepareUploads(files, { prefix: "uploads" }));
     const scopeMap = {
       beforeDepFiles: "BEFORE_DEP",
       afterDepFiles: "AFTER_DEP",
       evidenceFiles: "EVIDENCE_FILE",
     };
 
-    for (const f of files) {
+    for (const item of uploaded) {
+      const f = item.file;
       const scope = scopeMap[f.fieldname];
       if (!scope) continue;
 
-      const storagePath = relPath(f.path);
+      const storagePath = item.storagePath;
       await client.query(
         `
         INSERT INTO public.llc_deployment_processing_attachment
@@ -2491,14 +3252,23 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
       );
     }
 
-    // ✅ 3) Reload full LLC (source vérité) + générer PDF DEP tout de suite (par plant)
-    const llcFull = await client.query(`SELECT * FROM public.llc WHERE id=$1`, [payload.llc_id]);
+    // =========================================================
+    // ✅ 3) Reload full LLC + regenerate PDF DEP (reflect latest data/files)
+    // =========================================================
+    const llcFull = await client.query(
+      `SELECT * FROM public.llc WHERE id=$1 AND is_deleted IS NOT TRUE`,
+      [payload.llc_id]
+    );
     const llcRowFull = llcFull.rows[0];
+
+    // Important: recharger processingRow si edit (car on l’a update)
+    const procFull = await client.query(`SELECT * FROM public.llc_deployment_processing WHERE id=$1`, [processingId]);
+    const processingRowFull = procFull.rows[0];
 
     const generatedRel = await generateDeploymentPdfForProcessing({
       client,
       llcRow: llcRowFull,
-      processingRow: processingRow,
+      processingRow: processingRowFull,
     });
 
     await client.query(
@@ -2510,7 +3280,9 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
       [generatedRel, processingId]
     );
 
-    // ✅ 4) créer token + statut PENDING pour l’admin
+    // =========================================================
+    // ✅ 4) créer (ou recréer) token + statut PENDING pour l’admin
+    // =========================================================
     const depToken = generateDepToken();
 
     await client.query(
@@ -2526,7 +3298,10 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
       [depToken, processingId]
     );
 
-    // ✅ 5) Check si tous les plants ont répondu -> move LLC to DEPLOYMENT_PROCESSING (comme avant)
+    // =========================================================
+    // ✅ 5) Check si tous les plants ont répondu -> move LLC to DEPLOYMENT_PROCESSING
+    // (en edit mode, tu peux le laisser tel quel : ça ne casse rien)
+    // =========================================================
     const dist = buildDistributionExcludingPlant({
       productLineLabel: llcRow.product_line_label,
       creatorPlant: llcRow.plant,
@@ -2549,12 +3324,14 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
 
     if (targetCount > 0 && doneCount >= targetCount) {
       await client.query(
-        `UPDATE public.llc SET status='DEPLOYMENT_PROCESSING' WHERE id=$1`,
+        `UPDATE public.llc SET status='DEPLOYMENT_PROCESSING' WHERE id=$1 AND is_deleted IS NOT TRUE`,
         [payload.llc_id]
       );
     }
 
-    // ✅ préparer l’envoi mail (MAIS après COMMIT)
+    // =========================================================
+    // ✅ mail after commit
+    // =========================================================
     const adminEmail = await getAdminEmail();
     mailAfterCommit = async () => {
       if (!adminEmail) {
@@ -2572,20 +3349,21 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
 
     await client.query("COMMIT");
 
-    // ✅ réponse
     res.json({
       ok: true,
-      saved: { ...processingRow, generated_dep: generatedRel },
+      saved: { ...processingRowFull, generated_dep: generatedRel },
       fileCount: files.length,
+      isEditMode,
+      processingId,
     });
 
-    // ✅ mail non bloquant après commit
     Promise.resolve()
       .then(() => mailAfterCommit?.())
       .catch((err) => console.error("❌ DEP review email failed:", err?.message || err));
   } catch (e) {
     try {
       await client.query("ROLLBACK");
+      await cleanupUploaded(uploaded);
     } catch {}
     res.status(400).json({ error: e?.message || "Save failed" });
   } finally {
@@ -2594,17 +3372,7 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
 });
 
 
-
 // ================== START ==================
-(async () => {
-  try {
-    await ensureUsersTable();
-    console.log("✅ users table ready");
-  } catch (e) {
-    console.error("❌ Failed to ensure users table:", e.message);
-  }
-
-  app.listen(PORT, () => {
-    console.log(`🚀 API running on http://localhost:${PORT}`);
-  });
-})();
+app.listen(PORT, () => {
+  console.log(`🚀 API running on http://localhost:${PORT}`);
+});
