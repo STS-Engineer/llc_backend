@@ -73,20 +73,51 @@ const SMTP_HOST = process.env.SMTP_HOST || "avocarbon-com.mail.protection.outloo
 const SMTP_PORT = Number(process.env.SMTP_PORT || 25);
 const EMAIL_FROM_NAME = process.env.EMAIL_FROM_NAME || "Administration STS";
 const EMAIL_FROM = process.env.EMAIL_FROM || "administration.STS@avocarbon.com";
+const SMTP_POOL = !["0", "false", "no"].includes(String(process.env.SMTP_POOL || "true").toLowerCase());
+const SMTP_MAX_CONNECTIONS = Number(process.env.SMTP_MAX_CONNECTIONS || 5);
+const SMTP_MAX_MESSAGES = Number(process.env.SMTP_MAX_MESSAGES || 100);
+const SMTP_CONNECTION_TIMEOUT_MS = Number(process.env.SMTP_CONNECTION_TIMEOUT_MS || 20000);
+const SMTP_GREETING_TIMEOUT_MS = Number(process.env.SMTP_GREETING_TIMEOUT_MS || 15000);
+const SMTP_SOCKET_TIMEOUT_MS = Number(process.env.SMTP_SOCKET_TIMEOUT_MS || 30000);
 
 // Configuration du transporteur email
 const emailTransporter = nodemailer.createTransport({
+  pool: SMTP_POOL,
+  maxConnections: SMTP_MAX_CONNECTIONS,
+  maxMessages: SMTP_MAX_MESSAGES,
   host: SMTP_HOST,
   port: SMTP_PORT,
-  secure: false,
+  secure: SMTP_PORT === 465,
+  connectionTimeout: SMTP_CONNECTION_TIMEOUT_MS,
+  greetingTimeout: SMTP_GREETING_TIMEOUT_MS,
+  socketTimeout: SMTP_SOCKET_TIMEOUT_MS,
   tls: { 
-    ciphers: 'SSLv3',
     rejectUnauthorized: false 
   },
-  connectionTimeout: 10000,
-  greetingTimeout: 10000,
-  socketTimeout: 10000,
 });
+
+async function sendMailWithMetrics(label, mailOptions) {
+  const startedAt = Date.now();
+
+  try {
+    const info = await emailTransporter.sendMail(mailOptions);
+    const acceptedCount = Array.isArray(info?.accepted) ? info.accepted.length : 0;
+    const rejectedCount = Array.isArray(info?.rejected) ? info.rejected.length : 0;
+
+    console.log(
+      `[mail] ${label} sent in ${Date.now() - startedAt}ms | accepted=${acceptedCount} rejected=${rejectedCount} messageId=${info?.messageId || "n/a"}`
+    );
+
+    if (rejectedCount > 0) {
+      console.warn(`[mail] ${label} rejected recipients:`, info.rejected);
+    }
+
+    return info;
+  } catch (err) {
+    console.error(`[mail] ${label} failed after ${Date.now() - startedAt}ms:`, err?.message || err);
+    throw err;
+  }
+}
 
 async function convertDocxToPdf({
   inputDocxAbsPath,
@@ -190,7 +221,7 @@ async function sendResetPasswordMail({ to, resetLink }) {
     </div>
   `;
 
-  await emailTransporter.sendMail({
+  await sendMailWithMetrics("reset-password", {
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
     subject: "Password reset request",
@@ -240,7 +271,7 @@ async function sendPmReviewMail({ to, llcId, token }) {
     </div>
   `;
 
-  await emailTransporter.sendMail({
+  await sendMailWithMetrics("pm-review", {
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
     subject: `LLC #${llcId} – PM approval required`,
@@ -307,7 +338,7 @@ async function sendFinalReviewMail({ to, llcId, token }) {
     </div>
   `;
 
-  await emailTransporter.sendMail({
+  await sendMailWithMetrics("final-review", {
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
     subject: `LLC #${llcId} – Final approval required`,
@@ -351,7 +382,7 @@ async function sendPmDecisionResultMail({ to, llcId, decision, reason }) {
     </div>
   `;
 
-  await emailTransporter.sendMail({
+  await sendMailWithMetrics(`pm-decision-${decision}`, {
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
     subject: `LLC #${llcId} – PM decision: ${decision}`,
@@ -397,7 +428,7 @@ async function sendFinalDecisionResultMail({ to, llcId, decision, reason, genera
     </div>
   `;
 
-  await emailTransporter.sendMail({
+  await sendMailWithMetrics(`final-decision-${decision}`, {
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
     subject: `LLC #${llcId} – Final decision: ${decision}`,
@@ -495,7 +526,7 @@ async function sendDistributionMail({
     }
   }
 
-  await emailTransporter.sendMail({
+  await sendMailWithMetrics(`distribution-${llcId}`, {
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to: toList.join(","),
     subject: `LLC #${llcId} – Distribution`,
@@ -553,7 +584,7 @@ async function sendDistributionInfoToAdminMail({
     </div>
   `;
 
-  await emailTransporter.sendMail({
+  await sendMailWithMetrics(`distribution-admin-info-${llcId}`, {
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
     subject: `LLC #${llcId} – Distributed to ${distributedPlants?.length || 0} plant(s)`,
@@ -806,7 +837,7 @@ async function sendDepReviewMail({ to, llcId, processingId, token, evidencePlant
     </div>
   `;
 
-  await emailTransporter.sendMail({
+  await sendMailWithMetrics(`dep-review-${processingId}`, {
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
     subject: `Evidence need your approval from plant: ${evidencePlant || "N/A"}`,
@@ -858,7 +889,7 @@ async function sendDepReworkMailToEditor({ to, llcId, processingId, token, reaso
     </div>
   `;
 
-  await emailTransporter.sendMail({
+  await sendMailWithMetrics(`dep-rework-${processingId}`, {
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
     subject: `DEP LLC #${llcId} – Rework required (${evidencePlant || "N/A"})`,
@@ -2024,14 +2055,44 @@ app.post("/api/llc/:id/pm-review/decision", async (req, res) => {
     // 3) Respond
     res.json({ ok: true });
 
-    const { editorEmail } = await getLlcEditorEmail(llcId);
-    sendPmDecisionResultMail({
-      to: editorEmail,
-      llcId,
-      decision: "APPROVED",
-    }).catch(console.error);
+    Promise.resolve()
+      .then(async () => {
+        const [{ editorEmail }, adminEmail] = await Promise.all([
+          getLlcEditorEmail(llcId),
+          getAdminEmail(),
+        ]);
 
-    // 4) Send final mail (non bloquant)
+        const mailTasks = [];
+
+        if (editorEmail) {
+          mailTasks.push(
+            sendPmDecisionResultMail({
+              to: editorEmail,
+              llcId,
+              decision: "APPROVED",
+            })
+          );
+        } else {
+          console.error("No editor email found. PM decision mail not sent.");
+        }
+
+        if (adminEmail) {
+          mailTasks.push(
+            sendFinalReviewMail({
+              to: adminEmail,
+              llcId,
+              token: finalToken,
+            })
+          );
+        } else {
+          console.error("No admin found (role=admin). Final review mail not sent.");
+        }
+
+        await Promise.allSettled(mailTasks);
+      })
+      .catch((err) => console.error("PM approval follow-up failed:", err?.message || err));
+    return;
+
     const adminEmail = await getAdminEmail();
     if (!adminEmail) {
       console.error("❌ No admin found (role=admin). Final review mail not sent.");
@@ -2059,15 +2120,27 @@ app.post("/api/llc/:id/pm-review/decision", async (req, res) => {
     [llcId, token, reason || ""]
   );
 
+  if (!r.rowCount) return res.status(404).json({ error: "Invalid or expired link" });
+
   res.json(r.rows[0]);
 
-  const { editorEmail } = await getLlcEditorEmail(llcId);
-  sendPmDecisionResultMail({
-    to: editorEmail,
-    llcId,
-    decision: "REJECTED",
-    reason: reason || "",
-  }).catch(console.error);
+  Promise.resolve()
+    .then(async () => {
+      const { editorEmail } = await getLlcEditorEmail(llcId);
+      if (!editorEmail) {
+        console.error("No editor email found. PM rejection mail not sent.");
+        return;
+      }
+
+      await sendPmDecisionResultMail({
+        to: editorEmail,
+        llcId,
+        decision: "REJECTED",
+        reason: reason || "",
+      });
+    })
+    .catch((err) => console.error("PM rejection follow-up failed:", err?.message || err));
+  return;
 
 });
 
@@ -2129,29 +2202,74 @@ app.post("/api/llc/:id/final-review/decision", async (req, res) => {
     [llcId, token, finalDecision, finalRejectReason, nextStatus]
   );
 
-  const { editorEmail, generated_llc } = await getLlcEditorEmail(llcId);
-  sendFinalDecisionResultMail({
-    to: editorEmail,
-    llcId,
-    decision: finalDecision,                 // "APPROVED" ou "REJECTED"
-    reason: finalRejectReason || "",
-    generated_llc,
-  }).catch(console.error);
-
   if (!r.rowCount) return res.status(404).json({ error: "Invalid or expired link" });
 
-  res.json(r.rows[0]);
+  const llcRow = r.rows[0];
+  res.json(llcRow);
 
-  if (action === "approve") {
-    const llcRow = r.rows[0];
+  Promise.resolve()
+    .then(async () => {
+      const mailTasks = [];
+      const { editorEmail, generated_llc } = await getLlcEditorEmail(llcId);
 
-    const dist = buildDistributionExcludingPlant({
-      productLineLabel: llcRow.product_line_label,
-      creatorPlant: llcRow.plant,
-    });
+      if (editorEmail) {
+        mailTasks.push(
+          sendFinalDecisionResultMail({
+            to: editorEmail,
+            llcId,
+            decision: finalDecision,
+            reason: finalRejectReason || "",
+            generated_llc: generated_llc || llcRow.generated_llc,
+          })
+        );
+      } else {
+        console.error("No editor email found. Final decision mail not sent.");
+      }
 
-    const distributedPlants = (dist.filteredKeys || []).map(k => `${k} Plant`);
-    const toList = await getDistributionRecipientsEmails({ plantKeys: dist.filteredKeys });
+      if (action === "approve") {
+        const dist = buildDistributionExcludingPlant({
+          productLineLabel: llcRow.product_line_label,
+          creatorPlant: llcRow.plant,
+        });
+
+        const distributedPlants = (dist.filteredKeys || []).map((k) => `${k} Plant`);
+        const [toList, adminEmail] = await Promise.all([
+          getDistributionRecipientsEmails({ plantKeys: dist.filteredKeys }),
+          getAdminEmail(),
+        ]);
+
+        mailTasks.push(
+          sendDistributionMail({
+            toList,
+            llcId,
+            productLineLabel: llcRow.product_line_label,
+            creatorPlant: llcRow.plant,
+            generated_llc: llcRow.generated_llc,
+          })
+        );
+
+        if (adminEmail) {
+          mailTasks.push(
+            sendDistributionInfoToAdminMail({
+              to: adminEmail,
+              llcId,
+              productLineLabel: llcRow.product_line_label,
+              creatorPlant: llcRow.plant,
+              distributedPlants,
+              generated_llc: llcRow.generated_llc,
+            })
+          );
+        } else {
+          console.error("No admin email. Distribution info not sent.");
+        }
+      }
+
+      await Promise.allSettled(mailTasks);
+    })
+    .catch((err) => console.error("Final review follow-up failed:", err?.message || err));
+  return;
+});
+/*
 
     // 1) mail aux plants (QM + PM)
     sendDistributionMail({
@@ -2177,6 +2295,7 @@ app.post("/api/llc/:id/final-review/decision", async (req, res) => {
 
 
 
+*/
 app.get("/api/dep-processing/:processingId/review", async (req, res) => {
   const processingId = Number(req.params.processingId);
   const token = String(req.query.token || "");
