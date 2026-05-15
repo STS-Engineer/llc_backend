@@ -390,7 +390,7 @@ async function sendPmDecisionResultMail({ to, llcId, decision, reason }) {
   });
 }
 
-async function sendFinalDecisionResultMail({ to, llcId, decision, reason, generated_llc }) {
+async function sendFinalDecisionResultMail({ to, cc, llcId, decision, reason, generated_llc }) {
   const editLink = `${FRONTEND_URL}/llc/${llcId}/edit`;
 
   const docxLink = generated_llc ? publicFileUrl(generated_llc) : "";
@@ -431,15 +431,27 @@ async function sendFinalDecisionResultMail({ to, llcId, decision, reason, genera
   await sendMailWithMetrics(`final-decision-${decision}`, {
     from: `"${EMAIL_FROM_NAME}" <${EMAIL_FROM}>`,
     to,
+    ...(cc ? { cc } : {}),
     subject: `LLC #${llcId} – Final decision: ${decision}`,
     html,
   });
 }
 
 async function getLlcEditorEmail(llcId) {
-  const r = await pool.query(`SELECT editor, generated_llc FROM public.llc WHERE id=$1 AND is_deleted IS NOT TRUE`, [llcId]);
-  if (!r.rowCount) return { editorEmail: "", generated_llc: "" };
-  return { editorEmail: r.rows[0].editor || "", generated_llc: r.rows[0].generated_llc || "" };
+  const r = await pool.query(
+    `
+    SELECT editor, validator, generated_llc
+    FROM public.llc
+    WHERE id=$1 AND is_deleted IS NOT TRUE
+    `,
+    [llcId]
+  );
+  if (!r.rowCount) return { editorEmail: "", validatorEmail: "", generated_llc: "" };
+  return {
+    editorEmail: r.rows[0].editor || "",
+    validatorEmail: r.rows[0].validator || "",
+    generated_llc: r.rows[0].generated_llc || "",
+  };
 }
 
 async function getDistributionRecipientsEmails({ plantKeys }) {
@@ -654,6 +666,59 @@ async function pickFirstProcessingAbs(attachments, scope, cache) {
   return await resolveStorageToImageSource(a.storage_path, cache);
 }
 
+function buildRootCausesText(rootCauses = []) {
+  return (rootCauses || [])
+    .map(
+      (rc, i) =>
+        `${i + 1}. ${rc.root_cause}\n- ${rc.detailed_cause_description}\n- Solution: ${rc.solution_description}\n- Conclusion: ${rc.conclusion}\n- Process: ${rc.process}\n- Origin: ${rc.origin}`
+    )
+    .join("\n\n");
+}
+
+async function buildCommonLlcDocData({
+  llcRow,
+  distribution_to,
+  llcAtt,
+  rootCauses,
+  pickFirstLlcScopeAbs,
+}) {
+  return {
+    id: llcRow.id,
+    category: llcRow.category || "",
+    problem_short: llcRow.problem_short || "",
+    problem_detail: llcRow.problem_detail || "",
+    llc_type: llcRow.llc_type || "",
+    customer: llcRow.customer || "",
+    product_family: llcRow.product_family || "",
+    product_type: llcRow.product_type || "",
+    quality_detection: llcRow.quality_detection || "",
+    application_label: llcRow.application_label || "",
+    product_line_label: llcRow.product_line_label || "",
+    part_or_machine_number: llcRow.part_or_machine_number || "",
+    editor: llcRow.editor || "",
+    plant: llcRow.plant || "",
+    failure_mode: llcRow.failure_mode || "",
+    conclusions: llcRow.conclusions || "",
+    validator: llcRow.validator || "",
+    pm_decision: llcRow.pm_decision || "",
+    pm_validation_date: llcRow.pm_validation_date
+      ? formatDateDMY(llcRow.pm_validation_date)
+      : "",
+    final_decision: llcRow.final_decision || "",
+    final_validation_date: llcRow.final_validation_date
+      ? formatDateDMY(llcRow.final_validation_date)
+      : "",
+    created_at: llcRow.created_at ? formatDateDMY(llcRow.created_at) : formatDateDMY(),
+    distribution_to,
+    situation_before: await pickFirstLlcScopeAbs(llcAtt, "SITUATION_BEFORE"),
+    situation_after: await pickFirstLlcScopeAbs(llcAtt, "SITUATION_AFTER"),
+    bad_part: await pickFirstLlcScopeAbs(llcAtt, "BAD_PART"),
+    good_part: await pickFirstLlcScopeAbs(llcAtt, "GOOD_PART"),
+    rootCauses,
+    rootCauses_text: buildRootCausesText(rootCauses),
+  };
+}
+
 async function generateDeploymentPdfForProcessing({
   client,
   llcRow,
@@ -725,51 +790,16 @@ async function generateDeploymentPdfForProcessing({
     ...(await buildEvidenceFromDb(rc)),
   })));
 
-  const docData = {
-    // =========================
-    // champs LLC (source vérité)
-    // =========================
-    id: llcRow.id,
-    problem_short: llcRow.problem_short,
-    created_at: formatDateDMY(llcRow.created_at),
-    editor: llcRow.editor,
-    final_validation_date: llcRow.final_validation_date
-      ? formatDateDMY(llcRow.final_validation_date)
-      : "",
-    validator: llcRow.validator,
-
-    product_line_label: llcRow.product_line_label,
-    application_label: llcRow.application_label,
-    customer: llcRow.customer,
-    product_family: llcRow.product_family,
-    plant: llcRow.plant,
-    part_or_machine_number: llcRow.part_or_machine_number,
-    quality_detection: llcRow.quality_detection,
-    product_type: llcRow.product_type,
-    problem_detail: llcRow.problem_detail,
-    conclusions: llcRow.conclusions,
-    distribution_to: distribution_to,
-
-    // =========================
-    // ✅ images LLC attendues par template
-    // =========================
-    situation_before: await pickFirstLlcScopeAbs(llcAtt, "SITUATION_BEFORE"),
-    situation_after: await pickFirstLlcScopeAbs(llcAtt, "SITUATION_AFTER"),
-    bad_part: await pickFirstLlcScopeAbs(llcAtt, "BAD_PART"),
-    good_part: await pickFirstLlcScopeAbs(llcAtt, "GOOD_PART"),
-
-    // =========================
-    // ✅ root causes table attendue par template
-    // =========================
+  const commonLlcDocData = await buildCommonLlcDocData({
+    llcRow,
+    distribution_to,
+    llcAtt,
     rootCauses,
+    pickFirstLlcScopeAbs,
+  });
 
-    // (optionnel si tu as un placeholder texte dans le template)
-    rootCauses_text: rootCauses
-      .map(
-        (rc, i) =>
-          `${i + 1}. ${rc.root_cause}\n- ${rc.detailed_cause_description}\n- Solution: ${rc.solution_description}\n- Conclusion: ${rc.conclusion}\n- Process: ${rc.process}\n- Origin: ${rc.origin}`
-      )
-      .join("\n\n"),
+  const docData = {
+    ...commonLlcDocData,
 
     // =========================
     // ✅ champs processing
@@ -807,6 +837,133 @@ async function generateDeploymentPdfForProcessing({
 
   const generatedRel = publicFileUrl(relPath(pdfAbs));
   return generatedRel;
+}
+
+async function generateFinalDeploymentPdfFromTemplate({
+  client,
+  llcRow,
+  processingRows,
+}) {
+  const dist = buildDistributionExcludingPlant({
+    productLineLabel: llcRow.product_line_label,
+    creatorPlant: llcRow.plant,
+  });
+  const distribution_to = dist.filteredText;
+
+  const llcAtt = await getLlcAttachments(client, llcRow.id);
+  const rootCausesDb = await getRootCausesWithAttachments(client, llcRow.id);
+  const imageCache = new Map();
+
+  const pickFirstLlcScopeAbs = async (attachments, scope) => {
+    const a = (attachments || []).find((x) => x.scope === scope);
+    if (!a) return "";
+    return await resolveStorageToImageSource(a.storage_path, imageCache);
+  };
+
+  const isImageFilename = (filename = "") =>
+    /\.(png|jpe?g|gif|bmp|webp)$/i.test(filename);
+
+  const buildEvidenceFromDb = async (rc) => {
+    const a = (rc.attachments || [])[0];
+    if (!a) return { evidence_image: "", evidence_link: "", evidence_name: "" };
+
+    const img = isImageFilename(a.filename);
+    const evidenceImage = img
+      ? await resolveStorageToImageSource(a.storage_path, imageCache)
+      : "";
+
+    return {
+      evidence_image: evidenceImage,
+      evidence_link: publicFileUrl(a.storage_path),
+      evidence_name: a.filename,
+    };
+  };
+
+  const rootCauses = await Promise.all((rootCausesDb || []).map(async (rc, i) => ({
+    index: i + 1,
+    root_cause: rc.root_cause,
+    detailed_cause_description: rc.detailed_cause_description,
+    solution_description: rc.solution_description,
+    conclusion: rc.conclusion,
+    process: rc.process,
+    origin: rc.origin,
+    ...(await buildEvidenceFromDb(rc)),
+  })));
+
+  const orderedRows = [...(processingRows || [])].sort((a, b) =>
+    String(a.evidence_plant || "").localeCompare(String(b.evidence_plant || ""))
+  );
+
+  const deployments = await Promise.all(
+    orderedRows.map(async (processingRow) => {
+      const procAtt = await getProcessingAttachments(client, processingRow.id);
+      return {
+        evidence_plant: processingRow.evidence_plant,
+        person: processingRow.person,
+        pm: processingRow.pm,
+        deployment_description: processingRow.deployment_description,
+        deployment_applicability: processingRow.deployment_applicability,
+        why_not_apply: processingRow.why_not_apply || "",
+        deployment_date: processingRow.deployment_date
+          ? formatDateDMY(processingRow.deployment_date)
+          : formatDateDMY(),
+        before_dep: await pickFirstProcessingAbs(procAtt, "BEFORE_DEP", imageCache),
+        after_dep: await pickFirstProcessingAbs(procAtt, "AFTER_DEP", imageCache),
+      };
+    })
+  );
+
+  const firstDeployment = deployments[0] || {
+    evidence_plant: "",
+    person: "",
+    pm: "",
+    deployment_description: "",
+    deployment_applicability: "",
+    why_not_apply: "",
+    deployment_date: "",
+    before_dep: "",
+    after_dep: "",
+  };
+  const deploymentPairs = buildDeploymentPairs(deployments);
+
+  const commonLlcDocData = await buildCommonLlcDocData({
+    llcRow,
+    distribution_to,
+    llcAtt,
+    rootCauses,
+    pickFirstLlcScopeAbs,
+  });
+
+  const buffer = buildFinalDeploymentDocxBuffer({
+    commonLlcDocData,
+    firstDeployment,
+    deploymentPairs,
+  });
+  const baseName = `DEP_MULTI_${llcRow.id}_${Date.now()}`;
+  const docxAbs = path.join(generatedDirAbs, `${baseName}.docx`);
+  fs.writeFileSync(docxAbs, buffer);
+
+  const pdfAbs = await convertDocxToPdf({
+    inputDocxAbsPath: docxAbs,
+    outputDirAbs: generatedDirAbs,
+    sofficePath: process.env.SOFFICE_PATH || "soffice",
+  });
+
+  try { fs.unlinkSync(docxAbs); } catch {}
+
+  return publicFileUrl(relPath(pdfAbs));
+}
+
+async function generateFinalDeploymentPdfForLlc({
+  client,
+  llcRow,
+  processingRows,
+}) {
+  return generateFinalDeploymentPdfFromTemplate({
+    client,
+    llcRow,
+    processingRows,
+  });
 }
 
 function generateDepToken() {
@@ -942,11 +1099,14 @@ const UPSERT = false; // false = n'écrase pas si email existe, true = update si
 const users = [
   { name: "Ons Ghariani", email: "ons.ghariani@avocarbon.com", plant: "ALL", role: "admin", password: "azertycvadmin" },
 
-  { name: "Ons Ghariani", email: "ons.ghariani@avocarbon.com", plant: "TEST Plant", role: "quality_manager", password: "azertycv" },
-  { name: "Ons Ghariani", email: "ons.ghariani@avocarbon.com", plant: "TEST Plant", role: "plant_manager", password: "azertycvplant" },
+  { name: "Ons1", email: "ons.ghariani@avocarbon.com", plant: "TEST Plant", role: "quality_manager", password: "azertycv" },
+  { name: "Ons1", email: "ons.ghariani@avocarbon.com", plant: "TEST Plant", role: "plant_manager", password: "azertycvplant" },
 
-  { name: "Ons", email: "ons.ghariani@avocarbon.com", plant: "TEST02 Plant", role: "quality_manager", password: "ons123" },
-  { name: "Ons", email: "ons.ghariani@avocarbon.com", plant: "TEST02 Plant", role: "plant_manager", password: "ons12345" },
+  { name: "Ons2", email: "ons.ghariani@avocarbon.com", plant: "TEST02 Plant", role: "quality_manager", password: "ons123" },
+  { name: "Ons2", email: "ons.ghariani@avocarbon.com", plant: "TEST02 Plant", role: "plant_manager", password: "ons12345" },
+
+  { name: "Ons3", email: "ons.ghariani@avocarbon.com", plant: "TEST03 Plant", role: "quality_manager", password: "ons123456" },
+  { name: "Ons3", email: "ons.ghariani@avocarbon.com", plant: "TEST03 Plant", role: "plant_manager", password: "ons12345789" },
 
   { name: "Gayathri N", email: "gayathri.n@avocarbon.com", plant: "CHENNAI Plant", role: "quality_manager", password: "Gayathri@2026!" },
   { name: "Sridhar B", email: "sridhar.b@avocarbon.com", plant: "CHENNAI Plant", role: "plant_manager", password: "Sridhar@2026!" },
@@ -986,7 +1146,7 @@ function validateUser(u) {
   return true;
 }
 
-async function main() {
+async function syncDefaultUsers() {
   const client = await pool.connect();
   const created = [];
   const updated = [];
@@ -1044,11 +1204,14 @@ async function main() {
     client.release();
   }
 }
-main();
+if (!process.argv.includes("--regenerate-evidence")) {
+  syncDefaultUsers();
+}
 
 const PLANT_VALIDATOR = {
   "TEST Plant": "ons.ghariani@avocarbon.com",
   "TEST02 Plant": "ons.ghariani@avocarbon.com",
+  "TEST03 Plant": "ons.ghariani@avocarbon.com",
   "FRANKFURT Plant": "dagmar.ansinn@avocarbon.com",
   "KUNSHAN Plant": "allan.riegel@avocarbon.com",
   "MONTERREY Plant": "hector.olivares@avocarbon.com",
@@ -1070,7 +1233,7 @@ function validatorForPlantExact(plant) {
 }
 
 const DISTRIBUTION_BY_PRODUCT_LINE = {
-  PRODUCT: "TEST - TEST02",
+  PRODUCT: "TEST - TEST02 - TEST03",
   BRUSH: "TEST - FRANKFURT - POITIERS - TIANJIN - CHENNAI",
   CHOKES: "SAME - SCEET - MONTERREY - ANHUI - KUNSHAN - CHENNAI",
   ASSEMBLY: "SAME - SCEET - MONTERREY - ANHUI - KUNSHAN - POITIERS",
@@ -1086,7 +1249,7 @@ function distributionToForProductLine(label) {
 
 function splitDistributionKeys(distributionStr) {
   return String(distributionStr || "")
-    .split("-")
+    .split(/[-,]/)
     .map(s => s.trim().toUpperCase())
     .filter(Boolean);
 }
@@ -1094,9 +1257,15 @@ function splitDistributionKeys(distributionStr) {
 // exemple: "FRANKFURT Plant" -> "FRANKFURT"
 function plantNameToKey(plantName) {
   return String(plantName || "")
+    .replace(/,+/g, " ")
     .replace(/\s*plant\s*$/i, "")
     .trim()
     .toUpperCase();
+}
+
+function normalizePlantName(plantName) {
+  const key = plantNameToKey(plantName);
+  return key ? `${key} Plant` : "";
 }
 
 function buildDistributionExcludingPlant({ productLineLabel, creatorPlant }) {
@@ -1122,7 +1291,131 @@ function getDistributionPlantsForLlcRow(llcRow) {
   });
 
   // dist.filteredKeys = ["FRANKFURT", "POITIERS", ...]
-  return dist.filteredKeys.map((k) => `${k} Plant`);
+  return dist.filteredKeys.map((k) => normalizePlantName(k));
+}
+
+function getTargetPlantsFromKeys(plantKeys) {
+  return (plantKeys || []).map((k) => normalizePlantName(k));
+}
+
+function normalizeDepDecision(decision) {
+  const value = String(decision || "").trim().toUpperCase();
+  return value || "PENDING_FOR_APPROVAL";
+}
+
+async function getLatestProcessingRowsByPlant(client, llcId, targetPlants) {
+  if (!targetPlants?.length) return [];
+
+  const r = await client.query(
+    `
+    SELECT
+      p.*
+    FROM public.llc_deployment_processing p
+    WHERE p.llc_id = $1
+    ORDER BY p.id DESC
+    `,
+    [llcId]
+  );
+
+  const targetSet = new Set(targetPlants.map((plant) => normalizePlantName(plant)).filter(Boolean));
+  const latestByPlant = new Map();
+
+  for (const row of r.rows || []) {
+    const normalizedPlant = normalizePlantName(row.evidence_plant);
+    if (!normalizedPlant || !targetSet.has(normalizedPlant) || latestByPlant.has(normalizedPlant)) {
+      continue;
+    }
+    latestByPlant.set(normalizedPlant, { ...row, evidence_plant: normalizedPlant });
+  }
+
+  return Array.from(latestByPlant.values());
+}
+
+function computeDeploymentSummary({ targetPlants, processingRows }) {
+  const latestByPlant = new Map();
+
+  for (const row of processingRows || []) {
+    const normalizedPlant = normalizePlantName(row?.evidence_plant);
+    if (normalizedPlant) {
+      latestByPlant.set(normalizedPlant, { ...row, evidence_plant: normalizedPlant });
+    }
+  }
+
+  const donePlants = targetPlants.filter((plant) => latestByPlant.has(plant));
+  const pendingPlants = targetPlants.filter((plant) => !latestByPlant.has(plant));
+  const submittedAllTargets =
+    targetPlants.length > 0 && donePlants.length === targetPlants.length;
+  const anyRejected = targetPlants.some(
+    (plant) => normalizeDepDecision(latestByPlant.get(plant)?.dep_decision) === "REJECTED"
+  );
+  const allApproved =
+    submittedAllTargets &&
+    targetPlants.every(
+      (plant) => normalizeDepDecision(latestByPlant.get(plant)?.dep_decision) === "APPROVED"
+    );
+
+  return {
+    latestByPlant,
+    donePlants,
+    pendingPlants,
+    submittedAllTargets,
+    anyRejected,
+    allApproved,
+  };
+}
+
+function buildClosedDeploymentSummaryFields({ targetPlants, processingRows }) {
+  const latestByPlant = new Map();
+
+  for (const row of processingRows || []) {
+    const normalizedPlant = normalizePlantName(row?.evidence_plant);
+    if (normalizedPlant) {
+      latestByPlant.set(normalizedPlant, { ...row, evidence_plant: normalizedPlant });
+    }
+  }
+
+  const orderedRows = (targetPlants || [])
+    .map((plant) => latestByPlant.get(plant))
+    .filter(Boolean);
+
+  const toPlantSummary = (getValue) =>
+    orderedRows
+      .map((row) => {
+        const value = getValue(row);
+        if (!value) return "";
+        return `${row.evidence_plant}: ${value}`;
+      })
+      .filter(Boolean)
+      .join(" | ");
+
+  const decisionDates = orderedRows
+    .map((row) => {
+      const time = row.dep_decision_at ? new Date(row.dep_decision_at).getTime() : NaN;
+      return Number.isFinite(time) ? time : null;
+    })
+    .filter((time) => time != null);
+
+  const closedAt =
+    decisionDates.length > 0
+      ? new Date(Math.max(...decisionDates)).toISOString()
+      : null;
+
+  return {
+    deployment_plants: orderedRows.map((row) => row.evidence_plant).join(" | "),
+    deployment_applicability_summary: toPlantSummary(
+      (row) => row.deployment_applicability || ""
+    ),
+    why_not_apply_summary: toPlantSummary((row) => row.why_not_apply || ""),
+    deployment_people: toPlantSummary((row) => row.person || ""),
+    deployment_validators: toPlantSummary((row) => row.pm || ""),
+    deployment_dates: toPlantSummary((row) =>
+      row.deployment_date ? formatDateDMY(row.deployment_date) : ""
+    ),
+    deployment_decision_dates: toPlantSummary((row) =>
+      row.dep_decision_at ? formatDateDMY(row.dep_decision_at) : ""
+    ),
+    closed_at: closedAt,
+  };
 }
 
 // ================== JWT helpers ==================
@@ -1199,11 +1492,80 @@ fs.mkdirSync(generatedDirAbs, { recursive: true });
 const TEMPLATE_PATH = path.join(process.cwd(), "templates", "QUALITY_TEMPLATE.docx");
 const TEMPLATE_DEP_PATH = path.join(process.cwd(), "templates", "QUALITY_TEMPLATE_DEP.docx");
 const TEMPLATE_DEP_NC_PATH = path.join(process.cwd(), "templates", "QUALITY_TEMPLATE_DEP_NC.docx");
+const TEMPLATE_DEP_MULTI_PATH = path.join(process.cwd(), "templates", "QUALITY_TEMPLATE_DEP_MULTI.docx");
 
 // ================== HELPERS ==================
 function relPath(absPath) {
   return path.relative(process.cwd(), absPath).replaceAll("\\", "/");
 }
+
+function isDepMultiGeneratedPath(storagePath = "") {
+  return /^DEP_MULTI_/i.test(path.basename(String(storagePath || "")));
+}
+
+function findLatestGeneratedLlcPdf(llcId) {
+  if (!llcId || !fs.existsSync(generatedDirAbs)) return "";
+
+  const prefix = `LLC_${llcId}_`;
+  const candidates = fs
+    .readdirSync(generatedDirAbs, { withFileTypes: true })
+    .filter(
+      (entry) =>
+        entry.isFile() &&
+        entry.name.startsWith(prefix) &&
+        entry.name.toLowerCase().endsWith(".pdf")
+    )
+    .map((entry) => {
+      const abs = path.join(generatedDirAbs, entry.name);
+      const stat = fs.statSync(abs);
+      return { name: entry.name, mtimeMs: stat.mtimeMs };
+    })
+    .sort((a, b) => b.mtimeMs - a.mtimeMs || b.name.localeCompare(a.name));
+
+  if (!candidates.length) return "";
+  return relPath(path.join(generatedDirAbs, candidates[0].name));
+}
+
+const ensureEvidenceGeneratedColumnReady = (async () => {
+  try {
+    await pool.query(`
+      ALTER TABLE public.llc
+      ADD COLUMN IF NOT EXISTS evidence_generated text
+    `);
+
+    const closedRows = await pool.query(
+      `
+      SELECT id, generated_llc, evidence_generated
+      FROM public.llc
+      WHERE status = 'CLOSED'
+        AND is_deleted IS NOT TRUE
+      `
+    );
+
+    for (const row of closedRows.rows || []) {
+      if (!isDepMultiGeneratedPath(row.generated_llc)) continue;
+
+      const originalGenerated = findLatestGeneratedLlcPdf(row.id);
+      const nextEvidenceGenerated = row.evidence_generated || row.generated_llc || null;
+
+      await pool.query(
+        `
+        UPDATE public.llc
+        SET generated_llc = COALESCE($2, generated_llc),
+            evidence_generated = COALESCE($3, evidence_generated)
+        WHERE id = $1
+        `,
+        [row.id, originalGenerated || null, nextEvidenceGenerated]
+      );
+    }
+
+    console.log("[db] evidence_generated column ready");
+    return true;
+  } catch (err) {
+    console.error("[db] evidence_generated setup failed:", err?.message || err);
+    return false;
+  }
+})();
 
 function safeName(s) {
   return String(s || "").replace(/[^\w.\-]+/g, "_");
@@ -1303,8 +1665,7 @@ async function cleanupUploaded(_uploaded) {
   return;
 }
 
-function generateDocxBuffer(templatePath, data) {
-  const content = fs.readFileSync(templatePath, "binary");
+function generateDocxBufferFromContent(content, data) {
   const zip = new PizZip(content);
 
   // ✅ module images
@@ -1366,6 +1727,215 @@ function generateDocxBuffer(templatePath, data) {
 
     throw err;
   }
+}
+
+function generateDocxBuffer(templatePath, data) {
+  const content = fs.readFileSync(templatePath, "binary");
+  return generateDocxBufferFromContent(content, data);
+}
+
+function escapeWordXml(value = "") {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function getDocxDocumentXml(zip, label) {
+  const docXmlFile = zip.file("word/document.xml");
+  if (!docXmlFile) {
+    throw new Error(`word/document.xml not found in ${label}`);
+  }
+  return docXmlFile.asText();
+}
+
+function getWordParagraphText(paragraphXml) {
+  const matches = paragraphXml.match(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/g) || [];
+  return matches
+    .map((chunk) => chunk.replace(/^<w:t\b[^>]*>/, "").replace(/<\/w:t>$/, ""))
+    .join("");
+}
+
+function replaceWordParagraphText(paragraphXml, nextText) {
+  const openTag = paragraphXml.match(/^<w:p\b[^>]*>/)?.[0];
+  if (!openTag) return paragraphXml;
+
+  const paragraphProps = paragraphXml.match(/<w:pPr\b[\s\S]*?<\/w:pPr>/)?.[0] || "";
+  const runProps = paragraphXml.match(/<w:rPr\b[\s\S]*?<\/w:rPr>/)?.[0] || "";
+
+  if (!String(nextText || "").length) {
+    return `${openTag}${paragraphProps}</w:p>`;
+  }
+
+  return `${openTag}${paragraphProps}<w:r>${runProps}<w:t xml:space="preserve">${escapeWordXml(nextText)}</w:t></w:r></w:p>`;
+}
+
+function buildDeploymentPairs(deployments = []) {
+  const pairs = [];
+
+  for (let i = 0; i < deployments.length; i += 2) {
+    const first = deployments[i] || {};
+    const second = deployments[i + 1] || null;
+
+    pairs.push({
+      first_person: first.person || "",
+      first_evidence_plant: first.evidence_plant || "",
+      first_before_dep: first.before_dep || "",
+      first_after_dep: first.after_dep || "",
+      first_deployment_description: first.deployment_description || "",
+      has_second: Boolean(second),
+      second_evidence_plant: second?.evidence_plant || "",
+      second_deployment_applicability: second?.deployment_applicability || "",
+      second_why_not_apply: second?.why_not_apply || "",
+      second_deployment_date: second?.deployment_date || "",
+    });
+  }
+
+  return pairs;
+}
+
+function buildDeploymentMultiTemplateBuffer() {
+  const templateBuffer = fs.readFileSync(TEMPLATE_DEP_MULTI_PATH, "binary");
+  const zip = new PizZip(templateBuffer);
+  const documentXml = getDocxDocumentXml(zip, "deployment multi template");
+
+  let openLoopCount = 0;
+  let closeLoopCount = 0;
+  const paragraphPattern = /<w:p\b[\s\S]*?<\/w:p>/g;
+
+  const updatedXml = documentXml.replace(paragraphPattern, (paragraphXml) => {
+    const paragraphText = getWordParagraphText(paragraphXml);
+
+    switch (paragraphText) {
+      case "{{#deployments}}": {
+        openLoopCount += 1;
+        return replaceWordParagraphText(
+          paragraphXml,
+          openLoopCount === 1 ? "{{#deployment_pairs}}" : "{{#has_second}}"
+        );
+      }
+      case "{{/deployments}}": {
+        closeLoopCount += 1;
+        return replaceWordParagraphText(
+          paragraphXml,
+          closeLoopCount === 1 ? "" : "{{/has_second}}{{/deployment_pairs}}"
+        );
+      }
+      case "Responsible of Deployment : {{person}}":
+        return replaceWordParagraphText(
+          paragraphXml,
+          "Responsible of Deployment : {{first_person}}"
+        );
+      case "Plant : {{evidence_plant}}":
+        return replaceWordParagraphText(
+          paragraphXml,
+          "Plant : {{first_evidence_plant}}"
+        );
+      case "{{%before_dep}}":
+        return replaceWordParagraphText(paragraphXml, "{{%first_before_dep}}");
+      case "{{%after_dep}}":
+        return replaceWordParagraphText(paragraphXml, "{{%first_after_dep}}");
+      case "Description : {{deployment_description}}":
+        return replaceWordParagraphText(
+          paragraphXml,
+          "Description : {{first_deployment_description}}"
+        );
+      case "Deployed by : {{evidence_plant}}":
+        return replaceWordParagraphText(
+          paragraphXml,
+          "Deployed by : {{second_evidence_plant}}"
+        );
+      case "Situation : {{deployment_applicability}}":
+        return replaceWordParagraphText(
+          paragraphXml,
+          "Situation : {{second_deployment_applicability}}"
+        );
+      case "Why do not apply (if not concerned) : {{why_not_apply}}":
+        return replaceWordParagraphText(
+          paragraphXml,
+          "Why do not apply (if not concerned) : {{second_why_not_apply}}"
+        );
+      case "Deployment Date :  {{deployment_date}}":
+        return replaceWordParagraphText(
+          paragraphXml,
+          "Deployment Date :  {{second_deployment_date}}"
+        );
+      default:
+        return paragraphXml;
+    }
+  });
+
+  if (openLoopCount !== 2 || closeLoopCount !== 2) {
+    throw new Error(
+      `Unexpected deployment loop structure in QUALITY_TEMPLATE_DEP_MULTI (${openLoopCount} opens, ${closeLoopCount} closes)`
+    );
+  }
+
+  zip.file("word/document.xml", updatedXml);
+  return zip.generate({ type: "nodebuffer" });
+}
+
+function findRenderedDeploymentSectionStart(docXml, label) {
+  const marker = "Responsible ";
+  const markerIndex = docXml.indexOf(marker);
+  const paragraphStart = markerIndex >= 0 ? docXml.lastIndexOf("<w:p", markerIndex) : -1;
+
+  if (markerIndex < 0 || paragraphStart < 0) {
+    throw new Error(`Unable to locate deployment section start in ${label}`);
+  }
+
+  return paragraphStart;
+}
+
+function findDocumentSectionPropsStart(docXml, label) {
+  const sectionPropsStart = docXml.lastIndexOf("<w:sectPr");
+  if (sectionPropsStart < 0) {
+    throw new Error(`Unable to locate section properties in ${label}`);
+  }
+  return sectionPropsStart;
+}
+
+function buildFinalDeploymentDocxBuffer({
+  commonLlcDocData,
+  firstDeployment,
+  deploymentPairs,
+}) {
+  const singleDeploymentBuffer = generateDocxBuffer(TEMPLATE_DEP_PATH, {
+    ...commonLlcDocData,
+    ...firstDeployment,
+  });
+
+  const multiTemplateBuffer = buildDeploymentMultiTemplateBuffer();
+  const multiDeploymentBuffer = generateDocxBufferFromContent(multiTemplateBuffer, {
+    ...commonLlcDocData,
+    ...firstDeployment,
+    deployment_pairs: deploymentPairs,
+  });
+
+  const singleDeploymentZip = new PizZip(singleDeploymentBuffer);
+  const multiDeploymentZip = new PizZip(multiDeploymentBuffer);
+  const singleXml = getDocxDocumentXml(singleDeploymentZip, "deployment template");
+  const multiXml = getDocxDocumentXml(multiDeploymentZip, "deployment multi template");
+
+  const singleStart = findRenderedDeploymentSectionStart(singleXml, "deployment template");
+  const singleSectPr = findDocumentSectionPropsStart(singleXml, "deployment template");
+  const multiStart = findRenderedDeploymentSectionStart(multiXml, "deployment multi template");
+  const multiSectPr = findDocumentSectionPropsStart(multiXml, "deployment multi template");
+
+  if (singleStart >= singleSectPr) {
+    throw new Error("Invalid deployment template structure before section properties");
+  }
+  if (multiStart >= multiSectPr) {
+    throw new Error("Invalid deployment multi template structure before section properties");
+  }
+
+  const combinedXml =
+    singleXml.slice(0, singleStart) +
+    multiXml.slice(multiStart, multiSectPr) +
+    multiXml.slice(multiSectPr);
+
+  multiDeploymentZip.file("word/document.xml", combinedXml);
+  return multiDeploymentZip.generate({ type: "nodebuffer" });
 }
 
 function formatDateDMY(date = new Date()) {
@@ -2001,7 +2571,10 @@ app.get("/api/llc/:id/pm-review", async (req, res) => {
     return res.status(404).json({ error: "Invalid or expired link" });
   }
 
-  res.json(r.rows[0]);
+  res.json({
+    ...r.rows[0],
+    evidence_plant: normalizePlantName(r.rows[0]?.evidence_plant),
+  });
 });
 
 async function getAdminEmail() {
@@ -2210,12 +2783,22 @@ app.post("/api/llc/:id/final-review/decision", async (req, res) => {
   Promise.resolve()
     .then(async () => {
       const mailTasks = [];
-      const { editorEmail, generated_llc } = await getLlcEditorEmail(llcId);
+      const { editorEmail, validatorEmail, generated_llc } = await getLlcEditorEmail(llcId);
 
       if (editorEmail) {
+        const normalizedEditorEmail = String(editorEmail || "").trim().toLowerCase();
+        const normalizedValidatorEmail = String(validatorEmail || "").trim().toLowerCase();
+        const finalDecisionCc =
+          finalDecision === "REJECTED" &&
+          normalizedValidatorEmail &&
+          normalizedValidatorEmail !== normalizedEditorEmail
+            ? validatorEmail
+            : "";
+
         mailTasks.push(
           sendFinalDecisionResultMail({
             to: editorEmail,
+            cc: finalDecisionCc,
             llcId,
             decision: finalDecision,
             reason: finalRejectReason || "",
@@ -2379,47 +2962,61 @@ app.post("/api/dep-processing/:processingId/review/decision", async (req, res) =
     if (!llcRes.rowCount) throw new Error("LLC not found");
     const llcRow = llcRes.rows[0];
 
-    // 3) compute target plants
+    // 3) compute target plants and global deployment state
     const dist = buildDistributionExcludingPlant({
       productLineLabel: llcRow.product_line_label,
       creatorPlant: llcRow.plant,
     });
-    const targetPlants = (dist.filteredKeys || []).map((k) => `${k} Plant`);
-
-    // 4) read all decisions for those target plants
-    const decRes = await client.query(
-      `
-      SELECT evidence_plant, dep_decision
-      FROM public.llc_deployment_processing
-      WHERE llc_id = $1
-        AND evidence_plant = ANY($2::text[])
-      `,
-      [processingRow.llc_id, targetPlants]
+    const targetPlants = getTargetPlantsFromKeys(dist.filteredKeys);
+    const processingRows = await getLatestProcessingRowsByPlant(
+      client,
+      processingRow.llc_id,
+      targetPlants
     );
+    const { submittedAllTargets, anyRejected, allApproved } = computeDeploymentSummary({
+      targetPlants,
+      processingRows,
+    });
 
-    const decisions = decRes.rows || [];
-    const anyRejected = decisions.some((x) => x.dep_decision === "REJECTED");
-    const allApproved =
-      targetPlants.length > 0 &&
-      targetPlants.every((plant) =>
-        decisions.some((x) => x.evidence_plant === plant && x.dep_decision === "APPROVED")
-      );
+    let nextLlcStatus = llcRow.status;
+    let closedGeneratedRel = "";
 
-    // 5) update LLC status
     if (anyRejected) {
-      await client.query(
-        `UPDATE public.llc SET status='DEPLOYMENT_REJECTED' WHERE id=$1 AND is_deleted IS NOT TRUE`,
-        [processingRow.llc_id]
-      );
+      nextLlcStatus = "DEPLOYMENT_REJECTED";
     } else if (allApproved) {
+      closedGeneratedRel = await generateFinalDeploymentPdfForLlc({
+        client,
+        llcRow,
+        processingRows,
+      });
+      nextLlcStatus = "CLOSED";
+    } else if (submittedAllTargets) {
+      nextLlcStatus = "DEPLOYMENT_PROCESSING";
+    } else {
+      nextLlcStatus = "DEPLOYMENT_IN_PROGRESS";
+    }
+
+    if (closedGeneratedRel) {
+      const evidenceColumnReady = await ensureEvidenceGeneratedColumnReady;
+      if (!evidenceColumnReady) {
+        throw new Error("Database column public.llc.evidence_generated is not available");
+      }
+
       await client.query(
-        `UPDATE public.llc SET status='DEPLOYMENT_VALIDATED' WHERE id=$1 AND is_deleted IS NOT TRUE`,
-        [processingRow.llc_id]
+        `
+        UPDATE public.llc
+        SET status = $2,
+            evidence_generated = $3
+        WHERE id = $1
+          AND is_deleted IS NOT TRUE
+        `,
+        [processingRow.llc_id, nextLlcStatus, closedGeneratedRel]
       );
     } else {
-      // on peut laisser DEPLOYMENT_PROCESSING
-      // (optionnel) enforce it:
-      // await client.query(`UPDATE public.llc SET status='DEPLOYMENT_PROCESSING' WHERE id=$1 AND is_deleted IS NOT TRUE`, [processingRow.llc_id]);
+      await client.query(
+        `UPDATE public.llc SET status = $2 WHERE id = $1 AND is_deleted IS NOT TRUE`,
+        [processingRow.llc_id, nextLlcStatus]
+      );
     }
 
     let reworkMailAfterCommit = null;
@@ -2464,8 +3061,8 @@ app.post("/api/dep-processing/:processingId/review/decision", async (req, res) =
     res.json({
       ok: true,
       processing: processingRow,
-      llcStatus:
-        anyRejected ? "DEPLOYMENT_REJECTED" : allApproved ? "DEPLOYMENT_VALIDATED" : llcRow.status,
+      llcStatus: nextLlcStatus,
+      evidence_generated: closedGeneratedRel || null,
     });
     Promise.resolve()
       .then(() => reworkMailAfterCommit?.())
@@ -2532,7 +3129,7 @@ app.get("/api/dep-processing/:processingId/rework", async (req, res) => {
   res.json({
     processingId: row.id,
     llc_id: row.llc_id,
-    evidence_plant: row.evidence_plant,
+    evidence_plant: normalizePlantName(row.evidence_plant),
     deployment_applicability: row.deployment_applicability,
     why_not_apply: row.why_not_apply,
     person: row.person,
@@ -2567,17 +3164,18 @@ app.get("/api/llc", requireAuth, async (req, res) => {
     // =========================================================
     // ✅ CAS SPECIAL: DEPLOYMENT => 1 ligne par plant
     // =========================================================
-    const DEP_STATUSES_WITH_PROCESSING = [
-      "DEPLOYMENT_PROCESSING",
-      "DEPLOYMENT_VALIDATED",
-      "DEPLOYMENT_REJECTED",
-    ];
+    const DEP_STATUS_FILTERS = {
+      DEPLOYMENT_PROCESSING: `COALESCE(NULLIF(TRIM(p.dep_decision), ''), 'PENDING_FOR_APPROVAL') NOT IN ('APPROVED', 'REJECTED')`,
+      DEPLOYMENT_VALIDATED: `p.dep_decision = 'APPROVED'`,
+      DEPLOYMENT_REJECTED: `p.dep_decision = 'REJECTED'`,
+    };
 
-    if (DEP_STATUSES_WITH_PROCESSING.includes(status)) {
-      params.push(status);
-      whereParts.push(`l.status = $${params.length}::text`);
+    if (Object.prototype.hasOwnProperty.call(DEP_STATUS_FILTERS, status)) {
+      const depWhereParts = [...whereParts];
+      depWhereParts.push(`l.status <> 'CLOSED'`);
+      depWhereParts.push(DEP_STATUS_FILTERS[status]);
 
-      const where = `WHERE ${whereParts.join(" AND ")}`;
+      const where = `WHERE ${depWhereParts.join(" AND ")}`;
 
       const q = `
         SELECT
@@ -2591,32 +3189,54 @@ app.get("/api/llc", requireAuth, async (req, res) => {
           p.person,
           p.deployment_description,
           p.pm,
+          p.dep_decision,
+          p.dep_decision_at,
+          p.dep_reject_reason,
           p.generated_dep,
           p.deployment_date,
 
-          -- attachments LLC
+          -- attachments LLC (bad/good/situation before/after)
           COALESCE(
             json_agg(
               DISTINCT jsonb_build_object(
-                'id', a.id,
-                'scope', a.scope,
-                'filename', a.filename,
-                'storage_path', a.storage_path
+                'id', la.id,
+                'scope', la.scope,
+                'filename', la.filename,
+                'storage_path', la.storage_path
               )
-            ) FILTER (WHERE a.id IS NOT NULL),
+            ) FILTER (WHERE la.id IS NOT NULL),
+            '[]'::json
+          ) AS attachments,
+
+          -- attachments processing (before/after dep + evidence files)
+          COALESCE(
+            json_agg(
+              DISTINCT jsonb_build_object(
+                'id', pa.id,
+                'scope', pa.scope,
+                'filename', pa.filename,
+                'storage_path', pa.storage_path
+              )
+            ) FILTER (WHERE pa.id IS NOT NULL),
             '[]'::json
           ) AS processing_attachments
 
         FROM public.llc l
         INNER JOIN public.llc_deployment_processing p ON p.llc_id = l.id
-        LEFT JOIN public.llc_deployment_processing_attachment a ON a.processing_id = p.id
+        LEFT JOIN public.llc_attachment la ON la.llc_id = l.id
+        LEFT JOIN public.llc_deployment_processing_attachment pa ON pa.processing_id = p.id
         ${where}
         GROUP BY l.id, p.id
         ORDER BY l.created_at DESC, p.deployment_date DESC
       `;
 
       const r = await pool.query(q, params);
-      return res.json(r.rows);
+      return res.json(
+        (r.rows || []).map((row) => ({
+          ...row,
+          evidence_plant: normalizePlantName(row.evidence_plant),
+        }))
+      );
     }
 
     // =========================================================
@@ -2653,45 +3273,73 @@ app.get("/api/llc", requireAuth, async (req, res) => {
     const r = await pool.query(q, params);
     const ids = r.rows.map(x => x.id);
 
-    let doneMap = {};
+    let latestProcessingByLlc = {};
 
     if (ids.length) {
-      const doneRes = await pool.query(
+      const processingRes = await pool.query(
         `
-        SELECT llc_id, array_agg(DISTINCT evidence_plant) AS done_plants
+        SELECT
+          llc_id,
+          evidence_plant,
+          deployment_applicability,
+          why_not_apply,
+          person,
+          pm,
+          deployment_date,
+          dep_decision_at,
+          id
         FROM public.llc_deployment_processing
         WHERE llc_id = ANY($1::int[])
-        GROUP BY llc_id
+        ORDER BY llc_id ASC, id DESC
         `,
         [ids]
       );
 
-      doneMap = doneRes.rows.reduce((acc, row) => {
-        acc[row.llc_id] = row.done_plants || [];
+      latestProcessingByLlc = processingRes.rows.reduce((acc, row) => {
+        const llcId = row.llc_id;
+        const plant = normalizePlantName(row.evidence_plant);
+        if (!llcId || !plant) return acc;
+
+        if (!acc[llcId]) acc[llcId] = new Map();
+        if (!acc[llcId].has(plant)) {
+          acc[llcId].set(plant, { ...row, evidence_plant: plant });
+        }
         return acc;
       }, {});
     }
 
     const enriched = r.rows.map((llc) => {
-      if (llc.status !== "DEPLOYMENT_IN_PROGRESS") return llc;
-
       const dist = buildDistributionExcludingPlant({
         productLineLabel: llc.product_line_label,
         creatorPlant: llc.plant,
       });
+      const targets = getTargetPlantsFromKeys(dist.filteredKeys);
+      const processingRows = Array.from(latestProcessingByLlc[llc.id]?.values() || []);
 
-      const targets = (dist.filteredKeys || []).map(k => `${k} Plant`);
-      const donePlants = doneMap[llc.id] || [];
+      if (llc.status === "DEPLOYMENT_IN_PROGRESS") {
+        const donePlants = processingRows.map((row) => row.evidence_plant);
+        const pending = targets.filter(p => !donePlants.includes(p));
+        const done = targets.filter(p => donePlants.includes(p));
 
-      const pending = targets.filter(p => !donePlants.includes(p));
-      const done = targets.filter(p => donePlants.includes(p));
+        const deployment_progress = [
+          pending.length ? `Pending for: ${pending.join(" - ")}` : null,
+          done.length ? `Done by: ${done.join(" - ")}` : null,
+        ].filter(Boolean).join(" | ");
 
-      const deployment_progress = [
-        pending.length ? `Pending for: ${pending.join(" - ")}` : null,
-        done.length ? `Done by: ${done.join(" - ")}` : null,
-      ].filter(Boolean).join(" | ");
+        return { ...llc, deployment_progress };
+      }
 
-      return { ...llc, deployment_progress };
+      if (llc.status === "CLOSED") {
+        return {
+          ...llc,
+          ...buildClosedDeploymentSummaryFields({
+            targetPlants: targets,
+            processingRows,
+          }),
+        };
+      }
+
+      return llc;
     });
 
     res.json(enriched);
@@ -2767,6 +3415,157 @@ app.get("/api/llc/:id", requireAuth, async (req, res) => {
     res.status(500).json({ error: e.message || "Read failed" });
   }
 });
+
+app.post("/api/llc/:id/regenerate-evidence-generated", requireAuth, async (req, res) => {
+  const llcId = Number(req.params.id);
+  if (!llcId) return res.status(400).json({ error: "Invalid id" });
+
+  if (!["admin", "quality_manager"].includes(req.user.role)) {
+    return res.status(403).json({ error: "Only Admin or Quality Manager can regenerate evidence" });
+  }
+
+  const client = await pool.connect();
+  try {
+    const evidenceColumnReady = await ensureEvidenceGeneratedColumnReady;
+    if (!evidenceColumnReady) {
+      throw new Error("Database column public.llc.evidence_generated is not available");
+    }
+
+    await client.query("BEGIN");
+
+    const llcRes = await client.query(
+      `
+      SELECT *
+      FROM public.llc
+      WHERE id = $1
+        AND is_deleted IS NOT TRUE
+      FOR UPDATE
+      `,
+      [llcId]
+    );
+
+    if (!llcRes.rowCount) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "LLC not found" });
+    }
+
+    const llcRow = llcRes.rows[0];
+    const dist = buildDistributionExcludingPlant({
+      productLineLabel: llcRow.product_line_label,
+      creatorPlant: llcRow.plant,
+    });
+    const targetPlants = getTargetPlantsFromKeys(dist.filteredKeys);
+    const processingRows = await getLatestProcessingRowsByPlant(client, llcId, targetPlants);
+    const { allApproved } = computeDeploymentSummary({
+      targetPlants,
+      processingRows,
+    });
+
+    if (!allApproved) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        error: "Evidence generated can only be regenerated when all target plants are approved",
+      });
+    }
+
+    const generatedRel = await generateFinalDeploymentPdfForLlc({
+      client,
+      llcRow,
+      processingRows,
+    });
+
+    await client.query(
+      `
+      UPDATE public.llc
+      SET evidence_generated = $2
+      WHERE id = $1
+        AND is_deleted IS NOT TRUE
+      `,
+      [llcId, generatedRel]
+    );
+
+    await client.query("COMMIT");
+    return res.json({ ok: true, evidence_generated: generatedRel });
+  } catch (e) {
+    try { await client.query("ROLLBACK"); } catch {}
+    return res.status(400).json({ error: e?.message || "Evidence regeneration failed" });
+  } finally {
+    client.release();
+  }
+});
+
+async function regenerateEvidenceGeneratedForLlcId(llcId) {
+  if (!Number.isFinite(Number(llcId)) || Number(llcId) <= 0) {
+    throw new Error("Invalid LLC id");
+  }
+
+  const client = await pool.connect();
+  try {
+    const evidenceColumnReady = await ensureEvidenceGeneratedColumnReady;
+    if (!evidenceColumnReady) {
+      throw new Error("Database column public.llc.evidence_generated is not available");
+    }
+
+    await client.query("BEGIN");
+
+    const llcRes = await client.query(
+      `
+      SELECT *
+      FROM public.llc
+      WHERE id = $1
+        AND is_deleted IS NOT TRUE
+      FOR UPDATE
+      `,
+      [Number(llcId)]
+    );
+
+    if (!llcRes.rowCount) {
+      throw new Error(`LLC ${llcId} not found`);
+    }
+
+    const llcRow = llcRes.rows[0];
+    const dist = buildDistributionExcludingPlant({
+      productLineLabel: llcRow.product_line_label,
+      creatorPlant: llcRow.plant,
+    });
+    const targetPlants = getTargetPlantsFromKeys(dist.filteredKeys);
+    const processingRows = await getLatestProcessingRowsByPlant(client, Number(llcId), targetPlants);
+    const { allApproved } = computeDeploymentSummary({
+      targetPlants,
+      processingRows,
+    });
+
+    if (!allApproved) {
+      throw new Error(
+        "Evidence generated can only be regenerated when all target plants are approved"
+      );
+    }
+
+    const generatedRel = await generateFinalDeploymentPdfForLlc({
+      client,
+      llcRow,
+      processingRows,
+    });
+
+    await client.query(
+      `
+      UPDATE public.llc
+      SET evidence_generated = $2
+      WHERE id = $1
+        AND is_deleted IS NOT TRUE
+      `,
+      [Number(llcId), generatedRel]
+    );
+
+    await client.query("COMMIT");
+    return generatedRel;
+  } catch (err) {
+    try { await client.query("ROLLBACK"); } catch {}
+    throw err;
+  } finally {
+    client.release();
+  }
+}
 
 app.put("/api/llc/:id/pm-validate", requireAuth, async (req, res) => {
   const llcId = Number(req.params.id);
@@ -3157,7 +3956,7 @@ app.get("/api/llc-list", async (req, res) => {
     const { rows } = await pool.query(`
       SELECT id, problem_short
       FROM public.llc
-      WHERE status = 'DEPLOYMENT_IN_PROGRESS'
+      WHERE status IN ('DEPLOYMENT_IN_PROGRESS', 'DEPLOYMENT_REJECTED')
         AND is_deleted IS NOT TRUE
       ORDER BY problem_short ASC
     `);
@@ -3197,6 +3996,7 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
     const payload = EvidenceDeploymentSchema.parse(
       JSON.parse(req.body.evidenceDeployment || "{}")
     );
+    payload.evidence_plant = normalizePlantName(payload.evidence_plant);
 
     // ✅ vérifier LLC existe + statut
     const llcRes = await client.query(
@@ -3217,14 +4017,15 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
     // ✅ MODE: edit si processingId + token existent
     const isEditMode = Boolean(payload.processingId && payload.token);
 
-    // ✅ statut attendu selon le mode
-    const expectedStatus = isEditMode ? "DEPLOYMENT_REJECTED" : "DEPLOYMENT_IN_PROGRESS";
+    const allowedStatuses = isEditMode
+      ? ["DEPLOYMENT_REJECTED"]
+      : ["DEPLOYMENT_IN_PROGRESS", "DEPLOYMENT_REJECTED"];
 
-    if (llcRow.status !== expectedStatus) {
+    if (!allowedStatuses.includes(llcRow.status)) {
       return res.status(400).json({
-        error: `LLC is not in ${expectedStatus}`,
+        error: `LLC is not in ${allowedStatuses.join(" or ")}`,
         llc_status: llcRow.status,
-        expected: expectedStatus,
+        expected: allowedStatuses,
       });
     }
 
@@ -3320,7 +4121,35 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
         }
       }
     } else {
-      // ✅ CREATE (ton code actuel)
+      const existing = await client.query(
+        `
+        SELECT id, evidence_plant, dep_decision
+        FROM public.llc_deployment_processing
+        WHERE llc_id = $1
+        ORDER BY id DESC
+        `,
+        [payload.llc_id]
+      );
+
+      const existingRow = (existing.rows || []).find(
+        (row) => normalizePlantName(row.evidence_plant) === payload.evidence_plant
+      );
+
+      if (existingRow) {
+        const existingDecision = normalizeDepDecision(existingRow.dep_decision);
+        const message =
+          existingDecision === "REJECTED"
+            ? "A deployment processing line already exists for this plant. Use the rework link from the rejection email."
+            : "A deployment processing line already exists for this plant.";
+
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          error: message,
+          processingId: existingRow.id,
+          dep_decision: existingDecision,
+        });
+      }
+
       const ins = await client.query(
         `
         INSERT INTO public.llc_deployment_processing
@@ -3418,35 +4247,39 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
     );
 
     // =========================================================
-    // ✅ 5) Check si tous les plants ont répondu -> move LLC to DEPLOYMENT_PROCESSING
-    // (en edit mode, tu peux le laisser tel quel : ça ne casse rien)
+    // ✅ 5) Recompute LLC status from the number of plants that have submitted
     // =========================================================
     const dist = buildDistributionExcludingPlant({
       productLineLabel: llcRow.product_line_label,
       creatorPlant: llcRow.plant,
     });
 
-    const targetPlants = (dist.filteredKeys || []).map((k) => `${k} Plant`);
+    const targetPlants = getTargetPlantsFromKeys(dist.filteredKeys);
     const targetCount = targetPlants.length;
 
     const doneRes = await client.query(
       `
-      SELECT COUNT(DISTINCT evidence_plant) AS done_count
+      SELECT DISTINCT evidence_plant
       FROM public.llc_deployment_processing
       WHERE llc_id = $1
-        AND evidence_plant = ANY($2::text[])
       `,
-      [payload.llc_id, targetPlants]
+      [payload.llc_id]
     );
 
-    const doneCount = Number(doneRes.rows[0]?.done_count || 0);
+    const doneCount = new Set(
+      (doneRes.rows || [])
+        .map((row) => normalizePlantName(row.evidence_plant))
+        .filter((plant) => targetPlants.includes(plant))
+    ).size;
+    const nextLlcStatus =
+      targetCount > 0 && doneCount >= targetCount
+        ? "DEPLOYMENT_PROCESSING"
+        : "DEPLOYMENT_IN_PROGRESS";
 
-    if (targetCount > 0 && doneCount >= targetCount) {
-      await client.query(
-        `UPDATE public.llc SET status='DEPLOYMENT_PROCESSING' WHERE id=$1 AND is_deleted IS NOT TRUE`,
-        [payload.llc_id]
-      );
-    }
+    await client.query(
+      `UPDATE public.llc SET status=$2 WHERE id=$1 AND is_deleted IS NOT TRUE`,
+      [payload.llc_id, nextLlcStatus]
+    );
 
     // =========================================================
     // ✅ mail after commit
@@ -3491,7 +4324,27 @@ app.post("/api/evidence-deployment", upload.any(), async (req, res) => {
 });
 
 
+async function runAppEntrypoint() {
+  const [command, rawId] = process.argv.slice(2);
+
+  if (command === "--regenerate-evidence") {
+    try {
+      const generatedRel = await regenerateEvidenceGeneratedForLlcId(Number(rawId));
+      console.log(`[evidence] regenerated for LLC ${Number(rawId)} -> ${generatedRel}`);
+      await pool.end();
+      process.exit(0);
+    } catch (err) {
+      console.error("[evidence] regeneration failed:", err?.message || err);
+      try { await pool.end(); } catch {}
+      process.exit(1);
+    }
+    return;
+  }
+
+  app.listen(PORT, () => {
+    console.log(`🚀 API running on http://localhost:${PORT}`);
+  });
+}
+
 // ================== START ==================
-app.listen(PORT, () => {
-  console.log(`🚀 API running on http://localhost:${PORT}`);
-});
+runAppEntrypoint();
